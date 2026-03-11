@@ -363,7 +363,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         const c = clean.charCodeAt(l - 1);
         if (c === 47 || c === 61) clean = clean.slice(0, l - 1);
     }
-    if (l < 6) {
+    if (clean.length < 6) {
         list.push({type: 0}, {type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
     } else {
         const urlBytes = textEncoder.encode(clean);
@@ -466,7 +466,8 @@ const xhttpResponseHeaders = {'Content-Type': 'application/octet-stream', 'X-Acc
 const handlePost = async (request) => {
     const reader = request.body.getReader({mode: 'byob'});
     const state = {socks5State: 0, tcpWriter: null, tcpSocket: null};
-    let sessionBuffer = new ArrayBuffer(32768);
+    const _maxChunkLen = maxChunkLen;
+    let sessionBuffer = new ArrayBuffer(131072);
     const isGrpc = !(request.headers.get('Referer') || '').includes('x_padding');
     const responseHeaders = new Headers(xhttpResponseHeaders);
     if (isGrpc) {
@@ -506,36 +507,33 @@ const handlePost = async (request) => {
             try {
                 let used = 0, offset = 0;
                 if (isGrpc) {
-                    let grpcBuf = new Uint8Array(0);
                     while (true) {
-                        while (grpcBuf.byteLength >= 5) {
-                            const grpcLen = ((grpcBuf[1] << 24) >>> 0) | (grpcBuf[2] << 16) | (grpcBuf[3] << 8) | grpcBuf[4];
-                            if (grpcBuf.byteLength >= 5 + grpcLen) {
-                                const grpcData = grpcBuf.subarray(5, 5 + grpcLen);
-                                grpcBuf = grpcBuf.subarray(5 + grpcLen);
+                        const {done, value} = await reader.read(new Uint8Array(sessionBuffer, used, _maxChunkLen));
+                        if (done) break;
+                        sessionBuffer = value.buffer;
+                        const bufToProcess = new Uint8Array(sessionBuffer, 0, used + value.byteLength), bufLen = bufToProcess.byteLength;
+                        offset = 0;
+                        while (bufLen - offset >= 5) {
+                            const grpcLen = ((bufToProcess[offset + 1] << 24) >>> 0) | (bufToProcess[offset + 2] << 16) | (bufToProcess[offset + 3] << 8) | bufToProcess[offset + 4];
+                            const frameSize = 5 + grpcLen;
+                            if (bufLen - offset >= frameSize) {
+                                const grpcData = bufToProcess.subarray(offset + 5, offset + frameSize);
+                                offset += frameSize;
                                 let p = grpcData[0] === 0x0A ? 1 : 0;
                                 while (p && grpcData[p++] & 0x80) ;
                                 const payload = p === 0 ? grpcData : grpcData.subarray(p);
-                                if (payload.length > 0) {
-                                    state.tcpWriter ? state.tcpWriter(payload) : await handleSession(payload, state, request, writable, close);
-                                }
+                                if (payload.length > 0) {state.tcpWriter ? state.tcpWriter(payload) : await handleSession(payload, state, request, writable, close)}
                             } else {break}
                         }
-                        const {done, value} = await reader.read(new Uint8Array(sessionBuffer, 0, 32768));
-                        if (done) break;
-                        sessionBuffer = value.buffer;
-                        const chunk = value.slice();
-                        if (grpcBuf.byteLength > 0) {
-                            const combined = new Uint8Array(grpcBuf.byteLength + chunk.byteLength);
-                            combined.set(grpcBuf);
-                            combined.set(chunk, grpcBuf.byteLength);
-                            grpcBuf = combined;
-                        } else {grpcBuf = chunk}
+                        if (offset < bufLen) {
+                            used = bufLen - offset;
+                            new Uint8Array(sessionBuffer).copyWithin(0, offset, bufLen);
+                        } else {used = 0}
                     }
                 } else {
                     while (true) {
-                        const redlen = state.tcpWriter ? 32768 : (offset = used, 16384);
-                        const {done, value} = await reader.read(new Uint8Array(sessionBuffer, offset, redlen));
+                        offset = used;
+                        const {done, value} = await reader.read(new Uint8Array(sessionBuffer, offset, _maxChunkLen));
                         if (done) break;
                         sessionBuffer = value.buffer;
                         used += value.byteLength;
