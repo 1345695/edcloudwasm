@@ -348,7 +348,10 @@ const 處理網頁套接字連線 = async (網頁套接字連線, 請求) => {
     // @ts-ignore
     const 早期資料 = 協議標頭 ? Uint8Array.fromBase64(協議標頭, {alphabet: 'base64url'}) : null;
     let 傳輸控制寫入器, 處理佇列 = null, 已解析請求, 傳輸控制插槽;
-    const 關閉連線 = () => {網頁套接字連線.close()};
+    const 關閉連線 = () => {
+        try {傳輸控制插槽?.close()} catch {}
+        try {網頁套接字連線.close(1011, 'WebSocket is closed')} catch {}
+    };
     const 處理 = 資料區塊 => {
         try {
             if (傳輸控制寫入器) return 傳輸控制寫入器(資料區塊);
@@ -374,13 +377,14 @@ const 處理網頁套接字連線 = async (網頁套接字連線, 請求) => {
     if (早期資料) 處理佇列(早期資料);
     網頁套接字連線.addEventListener("message", 事件 => (傳輸控制寫入器 || 處理佇列)(事件.data));
     網頁套接字連線.addEventListener("error", 關閉連線);
+    網頁套接字連線.addEventListener("close", 關閉連線);
 };
 export default {
     async fetch(請求) {
         if (請求.headers.get('Upgrade') === 'websocket') {
             const {0: 客戶端插槽, 1: 網頁套接字連線} = new WebSocketPair();
             // @ts-ignore
-            網頁套接字連線.accept(), 網頁套接字連線.binaryType = "arraybuffer";
+            網頁套接字連線.accept({allowHalfOpen: true}), 網頁套接字連線.binaryType = "arraybuffer";
             處理網頁套接字連線(網頁套接字連線, 請求);
             return new Response(null, {status: 101, webSocket: 客戶端插槽});
         }

@@ -1014,7 +1014,10 @@ const handleWebSocketConn = async (webSocket, request) => {
     const earlyData = protocolHeader ? Uint8Array.fromBase64(protocolHeader, {alphabet: 'base64url'}) : null;
     const state = {socks5State: 0, tcpWriter: null, tcpSocket: null, ssInbound: null, ssOutbound: null, ssResponseSalt: null};
     let processingQueue = null;
-    const close = () => {webSocket.close()};
+    const close = () => {
+        try {state.tcpSocket?.close()} catch {}
+        try {webSocket.close(1011, 'WebSocket is closed')} catch {}
+    };
     const process = (chunk) => {
         if (state.tcpWriter) return state.tcpWriter(chunk);
         return handleSession(earlyData ? chunk : new Uint8Array(chunk), state, request, webSocket, close, earlyData !== null);
@@ -1023,6 +1026,7 @@ const handleWebSocketConn = async (webSocket, request) => {
     if (earlyData) processingQueue(earlyData);
     webSocket.addEventListener("message", event => (state.tcpWriter || processingQueue)(event.data));
     webSocket.addEventListener("error", close);
+    webSocket.addEventListener("close", close);
 };
 const grpcHeaders = {'Content-Type': 'application/grpc', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
 const xhttpHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
@@ -1031,7 +1035,10 @@ const handleGrpcPost = async (request, reader, buffer, used) => {
     let close = () => {};
     return new Response(new ReadableStream({
         start(controller) {
-            close = () => {try {controller.close()} catch {}};
+            close = () => {
+                try {state.tcpSocket?.close()} catch {}
+                try {controller.close()} catch {}
+            };
             const writable = {
                 send: (chunk) => {
                     const len = chunk.byteLength;
@@ -1092,7 +1099,10 @@ const handleXhttpPost = async (request, reader, xhttpBuffer, used) => {
     let close = () => {};
     return new Response(new ReadableStream({
         start(controller) {
-            close = () => {try {controller.close()} catch {}};
+            close = () => {
+                try {state.tcpSocket?.close()} catch {}
+                try {controller.close()} catch {}
+            };
             const writable = {send: (chunk) => controller.enqueue(chunk)};
             (async () => {
                 while (true) {
@@ -1205,7 +1215,7 @@ export default {
         }
         if (request.headers.get('Upgrade') === 'websocket') {
             const {0: clientSocket, 1: webSocket} = new WebSocketPair();
-            webSocket.accept(), webSocket.binaryType = "arraybuffer";
+            webSocket.accept({allowHalfOpen: true}), webSocket.binaryType = "arraybuffer";
             handleWebSocketConn(webSocket, request);
             return new Response(null, {status: 101, webSocket: clientSocket});
         }
