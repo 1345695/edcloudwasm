@@ -25,16 +25,6 @@
 
 ## 部署到 Cloudflare Workers ☁️
 
-> ⚠️ <h1><font color="red"><strong>重要警告</strong></font></h1>
-> **（关于免费 Workers）**
->
-> - 使用 **Cloudflare 免费 Workers 计划** 直接部署本项目时，当前实测可能出现 **1101 错误（Worker 内部异常）**，导致服务无法正常运行。
-> - 在 **付费 Workers 计划** 下部署可以正常工作。
-> - 使用 **Cloudflare Pages + Functions** 部署一切正常，不受上述限制。
-> - 免费 Worker 建议使用单文件 [免费worker版本](https://github.com/1345695/edcloudwasm/tree/src/%E7%BA%AF%E4%BC%A0%E8%BE%93%E4%BB%A3%E7%A0%81)。
->
-> **因此：如果你是免费账户，更推荐使用 _Cloudflare Pages_ 方式部署本项目。**
-
 项目根目录下的 `wrangler.toml` 已提供基础配置，推荐的部署流程如下。
 
 ### 1. 准备工作
