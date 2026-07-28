@@ -676,8 +676,8 @@ const connectNat64 = async (addrType, port, nat64Auth, addrBytes, proxyAll, limi
     if (addrType === 1) return concurrentConnect(ipv4ToNat64Ipv6(hostname, nat64Prefixes), port, limit);
     return concurrentConnect(hostname, port, limit);
 };
-const williamResult = async (william) => {
-    const answer = await concurrentDnsResolve(william, 'TXT');
+const txtdnsResult = async (txtdns) => {
+    const answer = await concurrentDnsResolve(txtdns, 'TXT');
     if (!answer) return null;
     let txtData, i = 0, len = answer.length;
     for (; i < len; i++) if (answer[i].type === 16) {
@@ -693,10 +693,10 @@ const williamResult = async (william) => {
     }
     return prefixes.length ? prefixes : null;
 };
-const proxyIpRegex = /william|fxpip/;
-const connectProxyIp = async (param, limit) => {
-    if (proxyIpRegex.test(param)) {
-        let resolvedIps = await williamResult(param);
+const proxyIpRegex = /william|fxpip|hhtxt/;
+const connectProxyIp = async (param, limit, txt) => {
+    if (txt || proxyIpRegex.test(param)) {
+        let resolvedIps = await txtdnsResult(param);
         if (!resolvedIps || resolvedIps.length === 0) return null;
         if (resolvedIps.length > limit) {
             for (let i = resolvedIps.length - 1; i > 0; i--) {
@@ -728,8 +728,8 @@ const strategyExecutorMap = new Map([
     [6, async ({addrType, port, addrBytes}, param, limit) => {
         return connectViaHttpProxy(addrType, port, param, addrBytes, limit, true);
     }],
-    [3, async (_parsedRequest, param, limit) => {
-        return connectProxyIp(param, limit);
+    [3, async (_parsedRequest, param, limit, txt) => {
+        return connectProxyIp(param, limit, txt);
     }],
     [4, async ({addrType, port, addrBytes, isHttp}, param, limit) => {
         const {nat64Auth, proxyAll} = param;
@@ -752,7 +752,7 @@ const getUrlParam = (offset, len) => {
     if (len <= 0) return null;
     return textDecoder.decode(wasmMem.subarray(dataPtr + offset, dataPtr + offset + len));
 };
-const urlListCacheDict = Object.create(null), urlListCacheKeys = new Array(urlParamCacheLimit);
+const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
 const establishTcpConnection = async (parsedRequest, request) => {
     let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [];
@@ -762,7 +762,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         const c = clean.charCodeAt(l - 1);
         if (c === 47 || c === 61) clean = clean.slice(0, l - 1);
     }
-    const cachedList = urlListCacheDict[clean];
+    const cachedList = urlListCacheDict.get(clean);
     if (cachedList !== undefined) {
         list = cachedList;
     } else {
@@ -773,13 +773,15 @@ const establishTcpConnection = async (parsedRequest, request) => {
             wasmMem.set(urlBytes, dataPtr);
             parseUrlWasm(urlBytes.length);
             const r = wasmRes;
-            const s5Val = getUrlParam(r[15], r[16]), httpVal = getUrlParam(r[17], r[18]), nat64Val = getUrlParam(r[19], r[20]), turnVal = getUrlParam(r[24], r[25]), ipVal = getUrlParam(r[21], r[22]), httpsVal = getUrlParam(r[26], r[27]);
+            const s5Val = getUrlParam(r[15], r[16]), httpVal = getUrlParam(r[17], r[18]), nat64Val = getUrlParam(r[19], r[20]), turnVal = getUrlParam(r[24], r[25]), ipVal = getUrlParam(r[21], r[22]), httpsVal = getUrlParam(r[26], r[27]), txtipVal = getUrlParam(r[28], r[29]);
             const proxyAll = r[23] === 1;
             !proxyAll && list.push({type: 0});
-            const add = (v, t) => {
+            const add = (v, t, txt) => {
                 if (!v) return;
                 const parts = decodeURIComponent(v).split(',').filter(Boolean);
-                if (parts.length) {
+                if (txt) {
+                    for (let i = 0; i < parts.length; i++) list.push({type: t, param: parts[i], txt});
+                } else if (parts.length) {
                     const parsedParams = parts.map(part => {
                         if (t === 4) return {nat64Auth: part, proxyAll};
                         if (t === 1 || t === 2 || t === 5 || t === 6) return parseAuthString(part);
@@ -792,21 +794,21 @@ const establishTcpConnection = async (parsedRequest, request) => {
             if (proxyAll) {
                 !list.length && list.push({type: 0});
             } else {
-                add(ipVal, 3);
+                add(ipVal, 3), add(txtipVal, 3, true);
                 list.push({type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
             }
         }
         const oldKey = urlListCacheKeys[urlListCacheIndex];
-        if (oldKey !== undefined) delete urlListCacheDict[oldKey];
+        if (oldKey !== undefined) urlListCacheDict.delete(oldKey);
         urlListCacheKeys[urlListCacheIndex] = clean;
-        urlListCacheDict[clean] = list;
+        urlListCacheDict.set(clean, list);
         urlListCacheIndex = (urlListCacheIndex + 1) % urlParamCacheLimit;
     }
     for (let i = 0; i < list.length; i++) {
         try {
             const exec = strategyExecutorMap.get(list[i].type);
             const sub = (list[i].concurrent && Array.isArray(list[i].param)) ? Math.max(1, Math.floor(concurrency / list[i].param.length)) : undefined;
-            const socket = await (list[i].concurrent && Array.isArray(list[i].param) ? Promise.any(list[i].param.map(ip => exec(parsedRequest, ip, sub))) : exec(parsedRequest, list[i].param));
+            const socket = await (list[i].concurrent && Array.isArray(list[i].param) ? Promise.any(list[i].param.map(ip => exec(parsedRequest, ip, sub, list[i].txt))) : exec(parsedRequest, list[i].param, undefined, list[i].txt));
             if (socket) return socket;
         } catch {}
     }
