@@ -10,7 +10,7 @@ const startThreshold = 50 * 1024 * 1024;
 const maxChunkLen = 64 * 1024;
 const flushTime = 4;
 const urlParamCacheLimit = 20;
-const proxyStrategyOrder = ['socks', 'http'];
+const proxyStrategyOrder = ['socks', 'http', 'https'];
 const proxyIpAddrs = {EU: 'ProxyIP.DE.CMLiussss.net', AS: 'ProxyIP.SG.CMLiussss.net', JP: 'ProxyIP.JP.CMLiussss.net', US: 'ProxyIP.US.CMLiussss.net'};//分区域proxyip
 const coloRegions = {
     JP: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']),
@@ -69,7 +69,7 @@ const parseAuthString = (authParam) => {
     const [hostname, port] = parseHostPort(hostStr, 1080);
     return {username, password, hostname, port};
 };
-const createConnect = (hostname, port, socket = connect({hostname, port})) => socket.opened.then(() => socket);
+const createConnect = (hostname, port, socketOptions, socket = connect({hostname, port}, socketOptions)) => socket.opened.then(() => socket);
 const connectViaSocksProxy = async (targetAddrType, targetPortNum, socksAuth, addrBytes) => {
     const socksSocket = await createConnect(socksAuth.hostname, socksAuth.port);
     const writer = socksSocket.writable.getWriter();
@@ -99,9 +99,10 @@ const connectViaSocksProxy = async (targetAddrType, targetPortNum, socksAuth, ad
 };
 const staticHeaders = `User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\r\nProxy-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n`;
 const encodedStaticHeaders = textEncoder.encode(staticHeaders);
-const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addrBytes) => {
+const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addrBytes, useTls = false) => {
     const {username, password, hostname, port} = httpAuth;
-    const proxySocket = await createConnect(hostname, port);
+    const connectOptions = useTls ? {secureTransport: 'on', allowHalfOpen: false} : undefined;
+    const proxySocket = await createConnect(hostname, port, connectOptions);
     const writer = proxySocket.writable.getWriter();
     const httpHost = binaryAddrToString(targetAddrType, addrBytes);
     let dynamicHeaders = `CONNECT ${httpHost}:${targetPortNum} HTTP/1.1\r\nHost: ${httpHost}:${targetPortNum}\r\n`;
@@ -168,6 +169,44 @@ const parseShadow = (firstChunk) => {
     const port = (firstChunk[addrInfo.dataOffset] << 8) | firstChunk[addrInfo.dataOffset + 1];
     return {addrType, addrBytes: addrInfo.addrBytes, dataOffset: addrInfo.dataOffset + 2, port};
 };
+const dohJsonOptions = {headers: {'Accept': 'application/dns-json'}}, txtdnsCache = new Map();
+const txtdnsResult = async (txtdns) => {
+    const now = Date.now(), cached = txtdnsCache.get(txtdns);
+    if (cached) {
+        if (cached.expire > now) return cached.value;
+        txtdnsCache.delete(txtdns);
+    }
+    const response = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(txtdns)}&type=TXT`, dohJsonOptions);
+    if (!response.ok) return null;
+    const dnsResult = await response.json(), answer = dnsResult.Answer || dnsResult.answer;
+    if (!answer || answer.length === 0) return null;
+    let txtData, i = 0, len = answer.length;
+    for (; i < len; i++) if (answer[i].type === 16) {
+        txtData = answer[i].data;
+        break;
+    }
+    if (!txtData) return null;
+    if (txtData.charCodeAt(0) === 34 && txtData.charCodeAt(txtData.length - 1) === 34) txtData = txtData.slice(1, -1);
+    const raw = txtData.split(/,|\\010|\n/), prefixes = [];
+    for (i = 0, len = raw.length; i < len; i++) {
+        const s = raw[i].trim();
+        if (s) prefixes.push(s);
+    }
+    const result = prefixes.length ? prefixes : null;
+    if (result) txtdnsCache.set(txtdns, {expire: now + 300000, value: result});
+    return result;
+};
+const proxyIpRegex = /william|fxpip|hhtxt/;
+const connectProxyIp = async (param, txt) => {
+    if (txt || proxyIpRegex.test(param)) {
+        const resolvedIps = await txtdnsResult(param);
+        if (!resolvedIps || resolvedIps.length === 0) return null;
+        const [host, port] = parseHostPort(resolvedIps[(Math.random() * resolvedIps.length) | 0], 443);
+        return createConnect(host, port);
+    }
+    const [host, port] = parseHostPort(param, 443);
+    return createConnect(host, port);
+};
 const strategyExecutorMap = new Map([
     [0, async ({addrType, port, addrBytes}) => {
         const hostname = binaryAddrToString(addrType, addrBytes);
@@ -181,14 +220,17 @@ const strategyExecutorMap = new Map([
         const httpAuth = parseAuthString(param);
         return connectViaHttpProxy(addrType, port, httpAuth, addrBytes);
     }],
-    [3, async (_parsedRequest, param) => {
-        const [host, port] = parseHostPort(param, 443);
-        return createConnect(host, port);
+    [6, async ({addrType, port, addrBytes}, param) => {
+        const httpAuth = parseAuthString(param);
+        return connectViaHttpProxy(addrType, port, httpAuth, addrBytes, true);
+    }],
+    [3, async (_parsedRequest, param, txt) => {
+        return connectProxyIp(param, txt);
     }]
 ]);
-const urlListCacheDict = Object.create(null), urlListCacheKeys = new Array(urlParamCacheLimit);
+const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
-const paramRegex = /(gs5|s5all|ghttp|httpall|s5|socks|http|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
+const paramRegex = /(gs5|s5all|ghttp|httpall|ghttps|httpsall|s5|socks|http|https|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
 const establishTcpConnection = async (parsedRequest, request) => {
     let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [];
     if (l > 3 && clean.charCodeAt(l - 4) === 47 && clean.charCodeAt(l - 3) === 84 && clean.charCodeAt(l - 2) === 117 && clean.charCodeAt(l - 1) === 110) {
@@ -197,7 +239,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         const c = clean.charCodeAt(l - 1);
         if (c === 47 || c === 61) clean = clean.slice(0, l - 1);
     }
-    const cachedList = urlListCacheDict[clean];
+    const cachedList = urlListCacheDict.get(clean);
     if (cachedList !== undefined) {
         list = cachedList;
     } else {
@@ -205,32 +247,32 @@ const establishTcpConnection = async (parsedRequest, request) => {
             paramRegex.lastIndex = 0;
             let m, p = Object.create(null);
             while ((m = paramRegex.exec(clean))) p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true;
-            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http;
-            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.proxyall || p.globalproxy);
+            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https;
+            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.proxyall || p.globalproxy);
             if (!proxyAll) list.push({type: 0});
-            const add = (v, t) => {
+            const add = (v, t, txt) => {
                 if (!v) return;
                 const parts = decodeURIComponent(v).split(',');
-                for (let i = 0; i < parts.length; i++) if (parts[i]) list.push({type: t, param: parts[i]});
+                for (let i = 0; i < parts.length; i++) if (parts[i]) list.push(txt ? {type: t, param: parts[i], txt} : {type: t, param: parts[i]});
             };
             for (let i = 0; i < proxyStrategyOrder.length; i++) {
                 const k = proxyStrategyOrder[i];
-                k === 'socks' ? add(s5, 1) : k === 'http' ? add(http, 2) : 0;
+                k === 'socks' ? add(s5, 1) : k === 'http' ? add(http, 2) : k === 'https' ? add(https, 6) : 0;
             }
             if (proxyAll) {if (!list.length) list.push({type: 0})} else {
-                add(p.ip, 3);
+                add(p.ip, 3), add(p.txtip, 3, true);
                 list.push({type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US});
             }
         }
         const oldKey = urlListCacheKeys[urlListCacheIndex];
-        if (oldKey !== undefined) delete urlListCacheDict[oldKey];
+        if (oldKey !== undefined) urlListCacheDict.delete(oldKey);
         urlListCacheKeys[urlListCacheIndex] = clean;
-        urlListCacheDict[clean] = list;
+        urlListCacheDict.set(clean, list);
         urlListCacheIndex = (urlListCacheIndex + 1) % urlParamCacheLimit;
     }
     for (let i = 0; i < list.length; i++) {
         try {
-            const socket = await strategyExecutorMap.get(list[i].type)?.(parsedRequest, list[i].param);
+            const socket = await strategyExecutorMap.get(list[i].type)?.(parsedRequest, list[i].param, list[i].txt);
             if (socket) return socket;
         } catch {}
     }
@@ -348,15 +390,22 @@ const createAsyncMicrotaskQueue = (consume, close) => {
     };
 };
 const handleWebSocketConn = async (webSocket, request) => {
-    const protocolHeader = request.headers.get('sec-websocket-protocol');
+    const refererHeader = request.headers.get('Referer');
+    const protocolHeader = refererHeader || request.headers.get('sec-websocket-protocol');
+    let earlyDataHeader = null;
+    if (refererHeader) {
+        earlyDataHeader = protocolHeader.slice(request.headers.get('host').length);
+    } else if (protocolHeader) {
+        earlyDataHeader = protocolHeader;
+    }
     // @ts-ignore
-    const earlyData = protocolHeader ? Uint8Array.fromBase64(protocolHeader, {alphabet: 'base64url'}) : null;
+    const earlyData = earlyDataHeader ? Uint8Array.fromBase64(earlyDataHeader, {alphabet: 'base64url'}) : null;
     let tcpWrite, processingQueue = null, parsedRequest, tcpSocket;
     const close = () => {
         try {tcpSocket?.close()} catch {}
         try {webSocket.close(1011, 'WebSocket is closed')} catch {}
     };
-    const processMessage = chunk => {
+    const process = chunk => {
         try {
             if (tcpWrite) return tcpWrite(chunk);
             return (async () => {
@@ -377,7 +426,7 @@ const handleWebSocketConn = async (webSocket, request) => {
             })();
         } catch {close()}
     };
-    processingQueue = createAsyncMicrotaskQueue(processMessage, close);
+    processingQueue = createAsyncMicrotaskQueue(process, close);
     if (earlyData) processingQueue(earlyData);
     webSocket.addEventListener("message", event => (tcpWrite || processingQueue)(event.data));
     webSocket.addEventListener("error", close);

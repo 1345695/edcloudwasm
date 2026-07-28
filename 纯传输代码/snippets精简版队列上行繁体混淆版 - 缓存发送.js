@@ -6,7 +6,7 @@ const 啟動閾值 = 50 * 1024 * 1024;
 const 最大區塊長度 = 64 * 1024;
 const 刷新時間 = 4;
 const 網址參數快取限制 = 20;
-const 代理策略順序 = ['socks', 'http'];
+const 代理策略順序 = ['socks', 'http', 'https'];
 const 代理位址表 = {EU: 'ProxyIP.DE.CMLiussss.net', AS: 'ProxyIP.SG.CMLiussss.net', JP: 'ProxyIP.JP.CMLiussss.net', US: 'ProxyIP.US.CMLiussss.net'};
 const 機房區域對照 = {
     JP: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']),
@@ -65,7 +65,7 @@ const 解析認證字串 = (認證參數) => {
     const [主機名稱, 連接埠] = 解析主機連接埠(主機字串, 1080);
     return {使用者名稱, 密碼, 主機名稱, 連接埠};
 };
-const 建立單次連線 = (主機名稱, 連接埠, 連線插槽 = 建立雲端連線({hostname: 主機名稱, port: 連接埠})) => 連線插槽.opened.then(() => 連線插槽);
+const 建立單次連線 = (主機名稱, 連接埠, 連線選項, 連線插槽 = 建立雲端連線({hostname: 主機名稱, port: 連接埠}, 連線選項)) => 連線插槽.opened.then(() => 連線插槽);
 const 經通道代理連線 = async (目標位址類型, 目標連接埠數值, 通道認證資訊, 位址位元組) => {
     const 通道連線插槽 = await 建立單次連線(通道認證資訊.主機名稱, 通道認證資訊.連接埠);
     const 寫入器 = 通道連線插槽.writable.getWriter();
@@ -95,9 +95,10 @@ const 經通道代理連線 = async (目標位址類型, 目標連接埠數值, 
 };
 const 固定超文本標頭 = `User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\r\nProxy-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n`;
 const 已編碼固定標頭 = 文字編碼器.encode(固定超文本標頭);
-const 經超文本代理連線 = async (目標位址類型, 目標連接埠數值, 超文本認證資訊, 位址位元組) => {
+const 經超文本代理連線 = async (目標位址類型, 目標連接埠數值, 超文本認證資訊, 位址位元組, 使用傳輸層安全 = false) => {
     const {使用者名稱, 密碼, 主機名稱, 連接埠} = 超文本認證資訊;
-    const 代理連線插槽 = await 建立單次連線(主機名稱, 連接埠);
+    const 連線選項 = 使用傳輸層安全 ? {secureTransport: 'on', allowHalfOpen: false} : undefined;
+    const 代理連線插槽 = await 建立單次連線(主機名稱, 連接埠, 連線選項);
     const 寫入器 = 代理連線插槽.writable.getWriter();
     const 超文本主機 = 二進位位址轉字串(目標位址類型, 位址位元組);
     let 動態標頭 = `CONNECT ${超文本主機}:${目標連接埠數值} HTTP/1.1\r\nHost: ${超文本主機}:${目標連接埠數值}\r\n`;
@@ -164,6 +165,44 @@ const 解析影子代理封包 = (首區塊) => {
     const 連接埠 = (首區塊[位址資訊.資料偏移] << 8) | 首區塊[位址資訊.資料偏移 + 1];
     return {位址類型, 位址位元組: 位址資訊.位址位元組, 資料偏移: 位址資訊.資料偏移 + 2, 連接埠};
 };
+const 文字記錄查詢選項 = {headers: {'Accept': 'application/dns-json'}}, 文字記錄快取 = new Map();
+const 文字DNS解析結果 = async (文字DNS域名) => {
+    const 目前時間 = Date.now(), 已快取 = 文字記錄快取.get(文字DNS域名);
+    if (已快取) {
+        if (已快取.過期時間 > 目前時間) return 已快取.結果值;
+        文字記錄快取.delete(文字DNS域名);
+    }
+    const 回應 = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(文字DNS域名)}&type=TXT`, 文字記錄查詢選項);
+    if (!回應.ok) return null;
+    const 查詢結果 = await 回應.json(), 回答 = 查詢結果.Answer || 查詢結果.answer;
+    if (!回答 || 回答.length === 0) return null;
+    let 文字資料, 索引 = 0, 長度 = 回答.length;
+    for (; 索引 < 長度; 索引++) if (回答[索引].type === 16) {
+        文字資料 = 回答[索引].data;
+        break;
+    }
+    if (!文字資料) return null;
+    if (文字資料.charCodeAt(0) === 34 && 文字資料.charCodeAt(文字資料.length - 1) === 34) 文字資料 = 文字資料.slice(1, -1);
+    const 原始資料 = 文字資料.split(/,|\\010|\n/), 前綴列表 = [];
+    for (索引 = 0, 長度 = 原始資料.length; 索引 < 長度; 索引++) {
+        const 暫字串 = 原始資料[索引].trim();
+        if (暫字串) 前綴列表.push(暫字串);
+    }
+    const 結果 = 前綴列表.length ? 前綴列表 : null;
+    if (結果) 文字記錄快取.set(文字DNS域名, {過期時間: 目前時間 + 300000, 結果值: 結果});
+    return 結果;
+};
+const 代理位址正則 = /william|fxpip|hhtxt/;
+const 連線代理位址 = async (參數值, 文字記錄) => {
+    if (文字記錄 || 代理位址正則.test(參數值)) {
+        const 已解析位址 = await 文字DNS解析結果(參數值);
+        if (!已解析位址 || 已解析位址.length === 0) return null;
+        const [主機, 連接埠] = 解析主機連接埠(已解析位址[(Math.random() * 已解析位址.length) | 0], 443);
+        return 建立單次連線(主機, 連接埠);
+    }
+    const [主機, 連接埠] = 解析主機連接埠(參數值, 443);
+    return 建立單次連線(主機, 連接埠);
+};
 const 策略執行器映射 = new Map([
     [0, async ({位址類型, 連接埠, 位址位元組}) => {
         const 主機名稱 = 二進位位址轉字串(位址類型, 位址位元組);
@@ -177,14 +216,17 @@ const 策略執行器映射 = new Map([
         const 超文本認證資訊 = 解析認證字串(參數值);
         return 經超文本代理連線(位址類型, 連接埠, 超文本認證資訊, 位址位元組);
     }],
-    [3, async (_已解析請求, 參數值) => {
-        const [主機, 連接埠] = 解析主機連接埠(參數值, 443);
-        return 建立單次連線(主機, 連接埠);
+    [6, async ({位址類型, 連接埠, 位址位元組}, 參數值) => {
+        const 超文本認證資訊 = 解析認證字串(參數值);
+        return 經超文本代理連線(位址類型, 連接埠, 超文本認證資訊, 位址位元組, true);
+    }],
+    [3, async (_已解析請求, 參數值, 文字記錄) => {
+        return 連線代理位址(參數值, 文字記錄);
     }]
 ]);
-const 網址列表快取字典 = Object.create(null), 網址列表快取鍵 = new Array(網址參數快取限制);
+const 網址列表快取字典 = new Map(), 網址列表快取鍵 = new Array(網址參數快取限制);
 let 網址列表快取索引 = 0;
-const 參數匹配正則 = /(gs5|s5all|ghttp|httpall|s5|socks|http|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
+const 參數匹配正則 = /(gs5|s5all|ghttp|httpall|ghttps|httpsall|s5|socks|http|https|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
 const 建立傳輸控制連線 = async (已解析請求, 請求) => {
     let 網址字串 = 請求.url, 清理路徑 = 網址字串.slice(網址字串.indexOf('/', 10) + 1), 路徑長度 = 清理路徑.length, 策略列表 = [];
     if (路徑長度 > 3 && 清理路徑.charCodeAt(路徑長度 - 4) === 47 && 清理路徑.charCodeAt(路徑長度 - 3) === 84 && 清理路徑.charCodeAt(路徑長度 - 2) === 117 && 清理路徑.charCodeAt(路徑長度 - 1) === 110) {
@@ -193,7 +235,7 @@ const 建立傳輸控制連線 = async (已解析請求, 請求) => {
         const 字元碼 = 清理路徑.charCodeAt(路徑長度 - 1);
         if (字元碼 === 47 || 字元碼 === 61) 清理路徑 = 清理路徑.slice(0, 路徑長度 - 1);
     }
-    const 已快取列表 = 網址列表快取字典[清理路徑];
+    const 已快取列表 = 網址列表快取字典.get(清理路徑);
     if (已快取列表 !== undefined) {
         策略列表 = 已快取列表;
     } else {
@@ -201,32 +243,32 @@ const 建立傳輸控制連線 = async (已解析請求, 請求) => {
             參數匹配正則.lastIndex = 0;
             let 匹配項, 暫指標 = Object.create(null);
             while ((匹配項 = 參數匹配正則.exec(清理路徑))) 暫指標[(匹配項[1] || 匹配項[3]).toLowerCase()] = 匹配項[2] ? (匹配項[2].charCodeAt(匹配項[2].length - 1) === 61 ? 匹配項[2].slice(0, -1) : 匹配項[2]) : true;
-            const 通道設定 = 暫指標.gs5 || 暫指標.s5all || 暫指標.s5 || 暫指標.socks, 超文本設定 = 暫指標.ghttp || 暫指標.httpall || 暫指標.http;
-            const 全域代理 = !!(暫指標.gs5 || 暫指標.s5all || 暫指標.ghttp || 暫指標.httpall || 暫指標.proxyall || 暫指標.globalproxy);
+            const 通道設定 = 暫指標.gs5 || 暫指標.s5all || 暫指標.s5 || 暫指標.socks, 超文本設定 = 暫指標.ghttp || 暫指標.httpall || 暫指標.http, 安全超文本設定 = 暫指標.ghttps || 暫指標.httpsall || 暫指標.https;
+            const 全域代理 = !!(暫指標.gs5 || 暫指標.s5all || 暫指標.ghttp || 暫指標.httpall || 暫指標.ghttps || 暫指標.httpsall || 暫指標.proxyall || 暫指標.globalproxy);
             if (!全域代理) 策略列表.push({類型: 0});
-            const 加入策略 = (暫值, 類型值) => {
+            const 加入策略 = (暫值, 類型值, 文字記錄) => {
                 if (!暫值) return;
                 const 分段陣列 = decodeURIComponent(暫值).split(',');
-                for (let 索引 = 0; 索引 < 分段陣列.length; 索引++) if (分段陣列[索引]) 策略列表.push({類型: 類型值, 參數: 分段陣列[索引]});
+                for (let 索引 = 0; 索引 < 分段陣列.length; 索引++) if (分段陣列[索引]) 策略列表.push(文字記錄 ? {類型: 類型值, 參數: 分段陣列[索引], 文字記錄} : {類型: 類型值, 參數: 分段陣列[索引]});
             };
             for (let 索引 = 0; 索引 < 代理策略順序.length; 索引++) {
                 const 鍵索引 = 代理策略順序[索引];
-                鍵索引 === 'socks' ? 加入策略(通道設定, 1) : 鍵索引 === 'http' ? 加入策略(超文本設定, 2) : 0;
+                鍵索引 === 'socks' ? 加入策略(通道設定, 1) : 鍵索引 === 'http' ? 加入策略(超文本設定, 2) : 鍵索引 === 'https' ? 加入策略(安全超文本設定, 6) : 0;
             }
             if (全域代理) {if (!策略列表.length) 策略列表.push({類型: 0})} else {
-                加入策略(暫指標.ip, 3);
+                加入策略(暫指標.ip, 3), 加入策略(暫指標.txtip, 3, true);
                 策略列表.push({類型: 3, 參數: 機房到代理映射.get(請求.cf?.colo) ?? 代理位址表.US});
             }
         }
         const 舊鍵 = 網址列表快取鍵[網址列表快取索引];
-        if (舊鍵 !== undefined) delete 網址列表快取字典[舊鍵];
+        if (舊鍵 !== undefined) 網址列表快取字典.delete(舊鍵);
         網址列表快取鍵[網址列表快取索引] = 清理路徑;
-        網址列表快取字典[清理路徑] = 策略列表;
+        網址列表快取字典.set(清理路徑, 策略列表);
         網址列表快取索引 = (網址列表快取索引 + 1) % 網址參數快取限制;
     }
     for (let 索引 = 0; 索引 < 策略列表.length; 索引++) {
         try {
-            const 連線插槽 = await 策略執行器映射.get(策略列表[索引].類型)?.(已解析請求, 策略列表[索引].參數);
+            const 連線插槽 = await 策略執行器映射.get(策略列表[索引].類型)?.(已解析請求, 策略列表[索引].參數, 策略列表[索引].文字記錄);
             if (連線插槽) return 連線插槽;
         } catch {}
     }
@@ -344,9 +386,16 @@ const 建立异步微任務佇列 = (消耗函式, 關閉連線) => {
     };
 };
 const 處理網頁套接字連線 = async (網頁套接字連線, 請求) => {
-    const 協議標頭 = 請求.headers.get('sec-websocket-protocol');
+    const 參照標頭 = 請求.headers.get('Referer');
+    const 協議標頭 = 參照標頭 || 請求.headers.get('sec-websocket-protocol');
+    let 早期資料標頭 = null;
+    if (參照標頭) {
+        早期資料標頭 = 協議標頭.slice(請求.headers.get('host').length);
+    } else if (協議標頭) {
+        早期資料標頭 = 協議標頭;
+    }
     // @ts-ignore
-    const 早期資料 = 協議標頭 ? Uint8Array.fromBase64(協議標頭, {alphabet: 'base64url'}) : null;
+    const 早期資料 = 早期資料標頭 ? Uint8Array.fromBase64(早期資料標頭, {alphabet: 'base64url'}) : null;
     let 傳輸控制寫入器, 處理佇列 = null, 已解析請求, 傳輸控制插槽;
     const 關閉連線 = () => {
         try {傳輸控制插槽?.close()} catch {}

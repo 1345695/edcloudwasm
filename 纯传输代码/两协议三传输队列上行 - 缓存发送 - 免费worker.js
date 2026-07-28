@@ -9,7 +9,7 @@ const bufferSize = 256 * 1024;
 const maxChunkLen = 64 * 1024;
 let concurrency = 4;
 const urlParamCacheLimit = 20;
-const proxyStrategyOrder = ['socks', 'http'];
+const proxyStrategyOrder = ['socks', 'http', 'https'];
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
 const proxyIpAddrs = {EU: 'ProxyIP.DE.CMLiussss.net', AS: 'ProxyIP.SG.CMLiussss.net', JP: 'ProxyIP.JP.CMLiussss.net', US: 'ProxyIP.US.CMLiussss.net'};
@@ -71,16 +71,16 @@ const parseAuthString = (authParam) => {
     const [hostname, port] = parseHostPort(hostStr, 1080);
     return {username, password, hostname, port};
 };
-const createConnect = (hostname, port, socket = connect({hostname, port})) => socket.opened.then(() => socket);
-const concurrentConnect = (hostname, port, limit = concurrency) => {
-    if (limit === 1) return createConnect(hostname, port);
+const createConnect = (hostname, port, socketOptions, socket = connect({hostname, port}, socketOptions)) => socket.opened.then(() => socket);
+const concurrentConnect = (hostname, port, limit = concurrency, socketOptions) => {
+    if (limit === 1) return createConnect(hostname, port, socketOptions);
     let settled = false, winner = null;
     const sockets = new Array(limit);
     const closeSocket = socket => {try {socket?.close()} catch {}};
     const attempts = Array.from({length: limit}, (_, i) => {
-        const socket = connect({hostname, port});
+        const socket = connect({hostname, port}, socketOptions);
         sockets[i] = socket;
-        return createConnect(hostname, port, socket).then(openedSocket => {
+        return createConnect(hostname, port, socketOptions, socket).then(openedSocket => {
             if (settled && openedSocket !== winner) closeSocket(openedSocket);
             return openedSocket;
         });
@@ -124,9 +124,10 @@ const connectViaSocksProxy = async (targetAddrType, targetPortNum, socksAuth, ad
 };
 const staticHeaders = `User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\r\nProxy-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n`;
 const encodedStaticHeaders = textEncoder.encode(staticHeaders);
-const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addrBytes, limit) => {
+const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addrBytes, limit, useTls = false) => {
     const {username, password, hostname, port} = httpAuth;
-    const proxySocket = await concurrentConnect(hostname, port, limit);
+    const connectOptions = useTls ? {secureTransport: 'on', allowHalfOpen: false} : undefined;
+    const proxySocket = await concurrentConnect(hostname, port, limit, connectOptions);
     const writer = proxySocket.writable.getWriter();
     const httpHost = binaryAddrToString(targetAddrType, addrBytes);
     let dynamicHeaders = `CONNECT ${httpHost}:${targetPortNum} HTTP/1.1\r\nHost: ${httpHost}:${targetPortNum}\r\n`;
@@ -247,8 +248,8 @@ const dohDnsHandler = async (payload) => {
     packet.set(new Uint8Array(dnsQueryResult), 2);
     return packet;
 };
-const williamResult = async (william) => {
-    const answer = await concurrentDnsResolve(william, 'TXT');
+const txtdnsResult = async (txtdns) => {
+    const answer = await concurrentDnsResolve(txtdns, 'TXT');
     if (!answer) return null;
     let txtData, i = 0, len = answer.length;
     for (; i < len; i++) if (answer[i].type === 16) {
@@ -264,10 +265,10 @@ const williamResult = async (william) => {
     }
     return prefixes.length ? prefixes : null;
 };
-const proxyIpRegex = /william|fxpip/;
-const connectProxyIp = async (param, limit) => {
-    if (proxyIpRegex.test(param)) {
-        let resolvedIps = await williamResult(param);
+const proxyIpRegex = /william|fxpip|hhtxt/;
+const connectProxyIp = async (param, limit, txt) => {
+    if (txt || proxyIpRegex.test(param)) {
+        let resolvedIps = await txtdnsResult(param);
         if (!resolvedIps || resolvedIps.length === 0) return null;
         if (resolvedIps.length > limit) {
             for (let i = resolvedIps.length - 1; i > 0; i--) {
@@ -296,18 +297,21 @@ const strategyExecutorMap = new Map([
     [2, async ({addrType, port, addrBytes}, param, limit) => {
         return connectViaHttpProxy(addrType, port, param, addrBytes, limit);
     }],
-    [3, async (_parsedRequest, param, limit) => {
-        return connectProxyIp(param, limit);
+    [6, async ({addrType, port, addrBytes}, param, limit) => {
+        return connectViaHttpProxy(addrType, port, param, addrBytes, limit, true);
+    }],
+    [3, async (_parsedRequest, param, limit, txt) => {
+        return connectProxyIp(param, limit, txt);
     }]
 ]);
-const paramRegex = /(gs5|s5all|ghttp|httpall|s5|socks|http|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
-const urlListCacheDict = Object.create(null), urlListCacheKeys = new Array(urlParamCacheLimit);
+const paramRegex = /(gs5|s5all|ghttp|httpall|ghttps|httpsall|s5|socks|http|https|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
+const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
 const establishTcpConnection = async (parsedRequest, request) => {
     let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [];
     const c = clean.charCodeAt(l - 1);
     if (c === 47 || c === 61) clean = clean.slice(0, l - 1);
-    const cachedList = urlListCacheDict[clean];
+    const cachedList = urlListCacheDict.get(clean);
     if (cachedList !== undefined) {
         list = cachedList;
     } else {
@@ -318,15 +322,17 @@ const establishTcpConnection = async (parsedRequest, request) => {
             paramRegex.lastIndex = 0;
             let m;
             while ((m = paramRegex.exec(clean))) {p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true}
-            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http;
-            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.proxyall || p.globalproxy);
+            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https;
+            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.proxyall || p.globalproxy);
             if (!proxyAll) list.push({type: 0});
-            const add = (v, t) => {
+            const add = (v, t, txt) => {
                 if (!v) return;
                 const parts = decodeURIComponent(v).split(',').filter(Boolean);
-                if (parts.length) {
+                if (txt) {
+                    for (let i = 0; i < parts.length; i++) list.push({type: t, param: parts[i], txt});
+                } else if (parts.length) {
                     const parsedParams = parts.map(part => {
-                        if (t === 1 || t === 2) return parseAuthString(part);
+                        if (t === 1 || t === 2 || t === 6) return parseAuthString(part);
                         return part;
                     });
                     list.push({type: t, param: parsedParams, concurrent: true});
@@ -334,26 +340,26 @@ const establishTcpConnection = async (parsedRequest, request) => {
             };
             for (let i = 0; i < proxyStrategyOrder.length; i++) {
                 const k = proxyStrategyOrder[i];
-                add(k === 'socks' ? s5 : http, k === 'socks' ? 1 : 2);
+                add(k === 'socks' ? s5 : k === 'http' ? http : https, k === 'socks' ? 1 : k === 'http' ? 2 : 6);
             }
             if (proxyAll) {
                 if (!list.length) list.push({type: 0});
             } else {
-                add(p.ip, 3);
+                add(p.ip, 3), add(p.txtip, 3, true);
                 list.push({type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
             }
         }
         const oldKey = urlListCacheKeys[urlListCacheIndex];
-        if (oldKey !== undefined) delete urlListCacheDict[oldKey];
+        if (oldKey !== undefined) urlListCacheDict.delete(oldKey);
         urlListCacheKeys[urlListCacheIndex] = clean;
-        urlListCacheDict[clean] = list;
+        urlListCacheDict.set(clean, list);
         urlListCacheIndex = (urlListCacheIndex + 1) % urlParamCacheLimit;
     }
     for (let i = 0; i < list.length; i++) {
         try {
             const exec = strategyExecutorMap.get(list[i].type);
             const sub = (list[i]['concurrent'] && Array.isArray(list[i].param)) ? Math.max(1, Math.floor(concurrency / list[i].param.length)) : undefined;
-            const socket = await (list[i]['concurrent'] && Array.isArray(list[i].param) ? Promise.any(list[i].param.map(ip => exec(parsedRequest, ip, sub))) : exec(parsedRequest, list[i].param));
+            const socket = await (list[i]['concurrent'] && Array.isArray(list[i].param) ? Promise.any(list[i].param.map(ip => exec(parsedRequest, ip, sub, list[i].txt))) : exec(parsedRequest, list[i].param, undefined, list[i].txt));
             if (socket) return socket;
         } catch {}
     }
