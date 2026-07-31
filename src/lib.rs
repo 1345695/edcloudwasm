@@ -34,6 +34,7 @@ use core::panic::PanicInfo;
 /// [24]: Turn 参数偏移,   [25]: Turn 参数长度
 /// [26]: Https 参数偏移,  [27]: Https 参数长度
 /// [28]: TxtIP 参数偏移,  [29]: TxtIP 参数长度
+/// [30]: Speed 参数偏移,  [31]: Speed 参数长度
 static mut RESULT: [i32; 32] = [0; 32];
 
 static mut COMMON_BUF: [u8; 1024] = [0; 1024]; // 1KB 通用数据缓冲区
@@ -987,7 +988,8 @@ struct UrlKeyDef {
     is_g: bool,
 }
 
-static URL_PARSE_KEYS: [UrlKeyDef; 18] = [
+static URL_PARSE_KEYS: [UrlKeyDef; 19] = [
+    UrlKeyDef { buf: b"speed", res_idx: 30, is_g: false },
     UrlKeyDef { buf: b"gs5", res_idx: 15, is_g: true },
     UrlKeyDef { buf: b"s5all", res_idx: 15, is_g: true },
     UrlKeyDef { buf: b"ghttp", res_idx: 17, is_g: true },
@@ -1015,7 +1017,7 @@ pub unsafe extern "C" fn parseUrlWasm(url_len: i32) {
     let data_ptr = COMMON_BUF.as_ptr();
     let mut is_all = false;
     
-    for idx in [15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29] {
+    for idx in [15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31] {
         set_res(idx, -1);
     }
 
@@ -1049,7 +1051,7 @@ pub unsafe extern "C" fn parseUrlWasm(url_len: i32) {
         
         let mut matched = false;
         // [循环] 参数匹配
-        for j in 0..18 {
+        for j in 0..19 {
             let key = URL_PARSE_KEYS.get_unchecked(j);
             let k_len = key.buf.len();
             

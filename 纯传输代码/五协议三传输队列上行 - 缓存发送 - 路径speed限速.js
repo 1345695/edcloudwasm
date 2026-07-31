@@ -1,10 +1,33 @@
-// 代码基本都抄的CM和AK大佬和天书大佬的项目，在此感谢各位大佬的无私奉献。
+/*
+// 代码基本都抄的CM和和AK大佬和天书大佬的项目，在此感谢各位大佬的无私奉献。
+// 支持xhttp和websocket和grpc传输，trojan和vless和ss和socks5和http协议入站,ss协议无密码，ss和socks5和http协议只能纯手搓，socks5协议不能在路径使用ed=2560参数
+// ws模式的vless导入链接：vless://{这里写uuid}@104.16.40.11:2053?encryption=none&security=tls&sni={这里写域名}&alpn=http%2F1.1&fp=chrome&type=ws&host={这里写域名}#vless
+// ws模式的trojan导入链接：trojan://{这里写密码}@104.16.40.11:2053?security=tls&sni={这里写域名}&alpn=http%2F1.1&fp=chrome&allowInsecure=1&type=ws&host={这里写域名}#trojan
+// xhttp模式的vless导入链接：vless://{这里写uuid}@104.16.40.11:2053?encryption=none&security=tls&sni={这里写域名}&alpn=h2&fp=chrome&allowInsecure=1&type=xhttp&host={这里写域名}&mode=stream-one#vless-xhttp
+// xhttp模式的trojan导入链接：trojan://passwd@104.16.40.11:2053?security=tls&sni=sni&alpn=h2&fp=chrome&allowInsecure=1&type=xhttp&host=host&path=%2F&mode=stream-one#trojan-xhttp
+// 复制协议开头的导入链接导入再手动修改即可
+ * ========================== URL路径参数速查表 =================================================================================
+ * 多个参数用 & 连接, 示例: /?s5=host:port&ip=1.2.3.4:443   注: s5/http/https/nat64/ip 均支持逗号分隔多个地址以实现并发连接
+ * s5/gs5/socks/s5all         - 直连失败SOCKS5代理 / 全局SOCKS5        示例: s5=user1:pass1@host1:port1,user2:pass2@host2:port2
+ * http/ghttp/httpall         - 直连失败HTTP代理 / 全局HTTP            示例: http=user1:pass1@host1:port1,user2:pass2@host2:port2
+ * https/ghttps/httpsall      - 直连失败HTTPS代理 / 全局HTTPS          示例: https=user1:pass1@host1:port1,user2:pass2@host2:port2
+ * nat64/gnat64/nat64all      - 直连失败NAT64转换 / 全局NAT64          示例: nat64=64:ff9b::,64:ff9b:1::
+ * turn/gturn/turnall         - 直连失败TURN代理 / 全局TURN            示例: turn=user1:pass1@host1:port1,user2:pass2@host2:port2
+ * ip/pyip/proxyip            - 直连失败时的备用IP                     示例: ip=1.2.3.4:443,5.6.7.8:443
+ * proxyall/globalproxy       - 全局代理标志,无s5/http/https参数时纯直连 示例: proxyall=1
+ * speed                      - 下行限速,单位默认MB/s                  示例: speed=50 表示50MB/s
+ * ==========================================================================================================================*/
 import {connect} from 'cloudflare:sockets';
-const defaultUuid = ''; // 可在环境变量配置，变量名称为UUID，两个地方都不写为不验证uuid
-const defaultPassword = ''; // 可在环境变量配置，变量名称为PASSWORD，两个地方都不写为不验证密码
-const socks5AndHttpUser = ''; // 可在环境变量配置，变量名称为S5HTTPUSER，两个地方都不写为不验证密码
-const socks5AndHttpPass = ''; // 可在环境变量配置，变量名称为S5HTTPPASS，两个地方都不写为不验证密码
-const ssAeadPassword = ''; // 可在环境变量配置，变量名称为SSPASS
+//**警告**:不看开头注释直接把域名地址扔浏览器里会收获彩蛋一枚
+const uuid = 'd342d11e-d424-4583-b36e-524ab1f0afa4';//vless使用的uuid
+//**警告**:trojan使用的sha224密钥，需要自己计算，当前设置为密码666的密钥
+//**警告**:trojan使用的sha224密钥，需要自己计算，当前设置为密码666的密钥
+//**警告**:trojan使用的sha224密钥，需要自己计算，当前设置为密码666的密钥
+//**警告**:trojan使用的sha224密钥计算网址：https://www.lzltool.com/data-sha224
+const passWordSha224 = '509eece82eb6910bebef9af9496092d3244b6c0d69ef3aaa4b12c565';
+const socks5AndHttpUser = 'admin';     //socsk5和http协议用户名，设置为空即为无密码验证，需要客户端也为空
+const socks5AndHttpPass = '123456';    //socsk5和http协议密码，设置为空即为无密码验证，需要客户端也为空
+const ssAeadPassword = '123456';       // ss协议 aes-128-gcm 密码（notls）
 // ---------------------------------------------------------------------------------
 // 理论最低带宽计算公式 (Theoretical Max Bandwidth Calculation):
 //    - 速度上限 (Mbps) = (bufferSize (字节) / flushTime (毫秒)) * 0.008
@@ -22,25 +45,24 @@ const startThreshold = 50 * 1024 * 1024; //50MB
 /**- **警告**: 免费worker设置64KB时传输相同流量cpu开销最低。*/
 const maxChunkLen = 64 * 1024;        // 64KB
 /** 进入缓冲模式时的缓冲区发送的触发时间。*/
-const flushTime = 4;                 // 4ms
+const flushTime = 3;                  // 3ms
 // ---------------------------------------------------------------------------------
 /** SS AEAD加密时每批并发处理的payload分片数量，length加密开销低，会随payload一起提交。*/
 const ssAeadEncryptCount = 4;
 // ---------------------------------------------------------------------------------
-/**- **警告**: worker最大支持6，超过6没意义*/
+/** TCPsocket并发获取，可提高tcp连接成功率*/
+/**- **警告**: snippets只能设置为1，worker最大支持6，超过6没意义*/
 let concurrency = 4;//socket获取并发数
 // ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
 // ---------------------------------------------------------------------------------
 //五者的socket获取顺序，全局模式下为这五个的顺序，非全局为：直连>socks>http>https>turn>nat64>proxyip>finallyProxyHost
+/**- **警告**: snippets只支持最大两次connect，所以snippets全局nat64不能使用域名访问，snippets访问cf失败的备用只有第一个有效*/
 const proxyStrategyOrder = ['socks', 'http', 'https', 'turn', 'nat64'];
-const sharedEchDns = 'lido.fi+https://223.5.5.5/dns-query'; //ECHDNS配置
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
 const proxyIpAddrs = {EU: 'ProxyIP.DE.CMLiussss.net', AS: 'ProxyIP.SG.CMLiussss.net', JP: 'ProxyIP.JP.CMLiussss.net', US: 'ProxyIP.US.CMLiussss.net'};//分区域proxyip
 const finallyProxyHost = 'ProxyIP.CMLiussss.net';//兜底proxyip
-// 订阅和面板使用的优选ip地址，可支持ip:port#name格式
-const ipListAll = ["172.64.154.125", "104.18.39.123", "172.64.145.18", "104.18.42.218", "104.18.33.131", "172.64.145.38", "172.64.145.202", "104.18.42.151"];
 const coloRegions = {
     JP: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']),
     EU: new Set([
@@ -56,83 +78,19 @@ const coloRegions = {
 };
 const coloToProxyMap = new Map();
 for (const [region, colos] of Object.entries(coloRegions)) {for (const colo of colos) coloToProxyMap.set(colo, proxyIpAddrs[region])}
-const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
-import wasmModule from './protocol.wasm';
-const instance = new WebAssembly.Instance(wasmModule);
-const {
-    memory, getUuidPtr, getResultPtr, getDataPtr, getHttpAuthPtr, getSocks5AuthPtr, setHttpAuthLenWasm, setSocks5AuthLenWasm, parseProtocolWasm, parseUrlWasm,
-    initCredentialsWasm, getPanelHtmlPtr, getPanelHtmlLen, getErrorHtmlPtr, getErrorHtmlLen, getTemplateWasm, getSecretStringWasm
-} = instance.exports;
-const wasmMem = new Uint8Array(memory.buffer);
-const wasmRes = new Int32Array(memory.buffer, getResultPtr(), 32);
-const dataPtr = getDataPtr();
-let isInitialized = false, rawHtml = null, rawErrorHtml = null, config = null, cachedTemplates = null, strList = null, userAgentSuffix = null;
-const decompressWasm = async (ptrFn, lenFn) => {
-    const ptr = ptrFn(), len = lenFn();
-    const compressedData = wasmMem.subarray(ptr, ptr + len);
-    const ds = new DecompressionStream("gzip");
-    const writer = ds.writable.getWriter();
-    writer.write(compressedData);
-    writer.close();
-    return await new Response(ds.readable).text();
-};
-const getEnv = (env) => {
-    if (config) return config;
-    config = {
-        uuid: (env.UUID || defaultUuid).trim(),
-        password: (env.PASSWORD || defaultPassword).trim(),
-        user: (env.S5HTTPUSER || socks5AndHttpUser).trim(),
-        pass: (env.S5HTTPPASS || socks5AndHttpPass).trim(),
-        sspass: (env.SSPASS || ssAeadPassword).trim()
-    };
-    return config;
-};
-const initializeWasm = (env) => {
-    const {uuid, password, user, pass} = getEnv(env);
-    const cleanUuid = uuid.replace(/-/g, "");
-    if (cleanUuid.length === 32) {
-        wasmRes[0] = 1;
-        const uuidBytes = new Uint8Array(16);
-        for (let i = 0, c; i < 16; i++) {uuidBytes[i] = (((c = cleanUuid.charCodeAt(i * 2)) > 64 ? c + 9 : c) & 0xF) << 4 | (((c = cleanUuid.charCodeAt(i * 2 + 1)) > 64 ? c + 9 : c) & 0xF);}
-        wasmMem.set(uuidBytes, getUuidPtr());
-    }
-    if (password.length > 0) {
-        wasmRes[1] = 1;
-        const passBytes = textEncoder.encode(password);
-        wasmMem.set(passBytes, dataPtr);
-        initCredentialsWasm(passBytes.length);
-    }
-    if (user && pass) {
-        const authBytes = textEncoder.encode(btoa(`${user}:${pass}`));
-        wasmMem.set(authBytes, getHttpAuthPtr());
-        setHttpAuthLenWasm(authBytes.length);
-        const userBytes = textEncoder.encode(user);
-        const passBytes = textEncoder.encode(pass);
-        const socks5Pkg = new Uint8Array(3 + userBytes.length + passBytes.length);
-        socks5Pkg[0] = 1, socks5Pkg[1] = userBytes.length, socks5Pkg.set(userBytes, 2), socks5Pkg[2 + userBytes.length] = passBytes.length, socks5Pkg.set(passBytes, 3 + userBytes.length);
-        wasmMem.set(socks5Pkg, getSocks5AuthPtr());
-        setSocks5AuthLenWasm(socks5Pkg.length);
-    }
-    cachedTemplates = new Array(13);
-    const subUuid = uuid || crypto.randomUUID();
-    const subPassword = password || crypto.randomUUID();
-    globalThis.subUuid = subUuid;
-    const getSecret = (idx) => {
-        const len = getSecretStringWasm(idx);
-        return textDecoder.decode(wasmMem.subarray(dataPtr, dataPtr + len));
-    };
-    strList = new Array(20);
-    for (let i = 0; i < 20; i++) {strList[i] = getSecret(i)}
-    const edge = strList[2];
-    userAgentSuffix = edge + strList[3] + edge + strList[4];
-    for (let i = 0; i < 13; i++) {
-        const len = getTemplateWasm(i);
-        const tmpl = textDecoder.decode(wasmMem.subarray(dataPtr, dataPtr + len));
-        const baseTmpl = tmpl.replaceAll("{{ECHDNS}}", encodeURIComponent(sharedEchDns));
-        cachedTemplates[i] = i < 7 ? baseTmpl.replaceAll("{{UUID}}", subUuid) : baseTmpl.replaceAll("{{PASSWORD}}", subPassword);
-    }
-    isInitialized = true;
-};
+const uuidBytes = new Uint8Array(16), hashBytes = new Uint8Array(56), offsets = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4];
+for (let i = 0, c; i < 16; i++) uuidBytes[i] = (((c = uuid.charCodeAt(i * 2 + offsets[i])) > 64 ? c + 9 : c) & 0xF) << 4 | (((c = uuid.charCodeAt(i * 2 + offsets[i] + 1)) > 64 ? c + 9 : c) & 0xF);
+for (let i = 0; i < 56; i++) hashBytes[i] = passWordSha224.charCodeAt(i);
+const [textEncoder, textDecoder, socks5Init, socks5req] = [new TextEncoder(), new TextDecoder(), new Uint8Array([5, 2, 0, 2]), new Uint8Array([5, 0, 0, 1, 0, 0, 0, 0, 0, 0])];
+let socks5Pkg, httpAuthValue;
+const httpRes200 = textEncoder.encode("HTTP/1.1 200 Connection Established\r\n\r\n"), httpRes407 = textEncoder.encode("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\n\r\n");
+if (socks5AndHttpUser && socks5AndHttpPass) {
+    httpAuthValue = textEncoder.encode(btoa(`${socks5AndHttpUser}:${socks5AndHttpPass}`));
+    const userBytes = textEncoder.encode(socks5AndHttpUser), passBytes = textEncoder.encode(socks5AndHttpPass);
+    socks5Pkg = new Uint8Array(3 + userBytes.length + passBytes.length);
+    socks5Pkg[0] = 1, socks5Pkg[1] = userBytes.length, socks5Pkg.set(userBytes, 2), socks5Pkg[2 + userBytes.length] = passBytes.length, socks5Pkg.set(passBytes, 3 + userBytes.length);
+}
+const html = `<body style=margin:0;overflow:hidden;background:#000><canvas id=c style=width:100vw;height:100vh><script>var C=document.getElementById("c"),g=C.getContext("webgl"),t=0,P,R,F,U,O,X,Y,L,T,b=.4,K="float L(vec3 v){vec3 a=v;float b,c,d;for(int i=0;i<5;i++){b=length(a);c=atan(a.y,a.x)*10.;d=acos(a.z/b)*10.;b=pow(b,8.);a=vec3(b*sin(d)*cos(c),b*sin(d)*sin(c),b*cos(d))+v;if(b>6.)break;}return 4.-dot(a,a);}",VS="attribute vec4 p;varying vec3 d,ld;uniform vec3 r,f,u;uniform float x,y;void main(){gl_Position=p;d=f+r*p.x*x+u*p.y*y;ld=vec3(p.x*x,p.y*y,-1.);}",FS="precision highp float;float L(vec3 v);uniform vec3 r,f,u,o;uniform float t;varying vec3 d,ld;uniform float l;void main(){vec3 tc=vec3(0);for(int i=0;i<4;i++){vec2 of=vec2(mod(float(i),2.),floor(float(i)/2.))*.5;vec3 rd=normalize(d+r*of.x*.001+u*of.y*.001),c=vec3(0);float s=.002*l,r1,r2,r3;for(int k=2;k<1200;k++){float ds=s*float(k);vec3 p=o+rd*ds;if(L(p)>0.){r1=s*float(k-1);r2=ds;for(int j=0;j<24;j++){r3=(r1+r2)*.5;if(L(o+rd*r3)>0.)r2=r3;else r1=r3;}vec3 v=o+rd*r3,nw;float e=r3*1e-4;nw=normalize(vec3(L(v-r*e)-L(v+r*e),L(v-u*e)-L(v+u*e),L(v+f*e)-L(v-f*e)));vec3 rf=reflect(normalize(ld),nw);float d2=dot(v,v),lt=pow(max(0.,dot(rf,vec3(.276,.92,.276))),4.)*.45+max(0.,dot(nw,vec3(.276,.92,.276)))*.25+.3;c=(sin(d2*5.+t+vec3(0,2,4))*.5+.5)*lt;break;}}tc+=c;}gl_FragColor=vec4(pow(tc*.25,vec3(.7)),1);}";function i(){var s=g.createProgram(),v=g.createShader(35633),f=g.createShader(35632);g.shaderSource(v,VS),g.compileShader(v),g.shaderSource(f,FS+K),g.compileShader(f),g.attachShader(s,v),g.attachShader(s,f),g.linkProgram(s),g.useProgram(s),P=g.getAttribLocation(s,"p"),R=g.getUniformLocation(s,"r"),F=g.getUniformLocation(s,"f"),U=g.getUniformLocation(s,"u"),O=g.getUniformLocation(s,"o"),X=g.getUniformLocation(s,"x"),Y=g.getUniformLocation(s,"y"),L=g.getUniformLocation(s,"l"),T=g.getUniformLocation(s,"t"),g.bindBuffer(34962,g.createBuffer()),g.bufferData(34962,new Float32Array([-1,-1,0,1,-1,0,1,1,0,-1,-1,0,1,1,0,-1,1,0]),35044),g.vertexAttribPointer(P,3,5126,!1,0,0),g.enableVertexAttribArray(P)}function w(){t+=.02,innerWidth*devicePixelRatio!=C.width&&(C.width=innerWidth*(d=devicePixelRatio||1),C.height=innerHeight*d,g.viewport(0,0,C.width,C.height));var v=C.width/C.height;g.uniform1f(X,v>1?v:1),g.uniform1f(Y,v>1?1:1/v),g.uniform1f(L,1.6),g.uniform1f(T,t),g.uniform3f(O,1.6*Math.cos(t*.5)*Math.cos(b),1.6*Math.sin(b),1.6*Math.sin(t*.5)*Math.cos(b)),g.uniform3f(R,Math.sin(t*.5),0,-Math.cos(t*.5)),g.uniform3f(U,-Math.sin(b)*Math.cos(t*.5),Math.cos(b),-Math.sin(b)*Math.sin(t*.5)),g.uniform3f(F,-Math.cos(t*.5)*Math.cos(b),-Math.sin(b),-Math.sin(t*.5)*Math.cos(b)),g.drawArrays(4,0,6),requestAnimationFrame(w)}i(),w()</script>`;
 const binaryAddrToString = (addrType, addrBytes) => {
     if (addrType === 3) return textDecoder.decode(addrBytes);
     if (addrType === 1) return `${addrBytes[0]}.${addrBytes[1]}.${addrBytes[2]}.${addrBytes[3]}`;
@@ -151,7 +109,7 @@ let ssMasterKeyPromise, ssHkdfKeyPromise;
 const createSsAeadCtx = async (salt = crypto.getRandomValues(new Uint8Array(16))) => {
     const hkdfKey = await (ssHkdfKeyPromise ||= (async () => {
         const masterKey = await (ssMasterKeyPromise ||= (async () => {
-            const pwd = textEncoder.encode(config.sspass);
+            const pwd = textEncoder.encode(ssAeadPassword);
             const out = new Uint8Array(16);
             let prev = emptyU8, offset = 0;
             while (offset < 16) {
@@ -305,15 +263,6 @@ const parseHostPort = (addr, defaultPort) => {
     }
     return [host, (port = parseInt(port), isNaN(port) ? defaultPort : port)];
 };
-const parseSubNode = (entry, defaultPort = 443) => {
-    const raw = (entry || '').trim();
-    if (!raw) return null;
-    const hashIndex = raw.indexOf('#');
-    const endpoint = hashIndex === -1 ? raw : raw.slice(0, hashIndex).trim();
-    const customName = hashIndex === -1 ? '' : raw.slice(hashIndex + 1).trim();
-    const [ip, portNum] = parseHostPort(endpoint || raw, defaultPort);
-    return {ip, port: String(portNum), name: customName || ip};
-};
 const parseAuthString = (authParam) => {
     let username, password, hostStr;
     const atIndex = authParam.lastIndexOf('@');
@@ -348,10 +297,6 @@ const isIPv4 = (str) => {
     }
     return dots === 3 && partLen > 0 && !(partLen > 1 && head === 48);
 };
-const addrTypeIs = (hostname) => {
-    const char0 = hostname.charCodeAt(0);
-    return (char0 - 48) >>> 0 > 9 ? (char0 === 91 ? 4 : 3) : isIPv4(hostname) ? 1 : 3;
-};
 const createConnect = (hostname, port, socketOptions, socket = connect({hostname, port}, socketOptions)) => socket.opened.then(() => socket);
 const concurrentConnect = (hostname, port, limit = concurrency, socketOptions) => {
     if (limit === 1) return createConnect(hostname, port, socketOptions);
@@ -380,7 +325,7 @@ const connectViaSocksProxy = async (targetAddrType, targetPortNum, socksAuth, ad
     const socksSocket = await concurrentConnect(socksAuth.hostname, socksAuth.port, limit);
     const writer = socksSocket.writable.getWriter();
     const reader = socksSocket.readable.getReader();
-    await writer.write(new Uint8Array([5, 2, 0, 2]));
+    await writer.write(socks5Init);
     const {value: authResponse} = await reader.read();
     if (!authResponse || authResponse[0] !== 5 || authResponse[1] === 0xFF) return null;
     if (authResponse[1] === 2) {
@@ -584,6 +529,160 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, targetI
         return null;
     }
 };
+const parseProtocolChunk = (chunk, socks5State) => {
+    const len = chunk.length;
+    const result = {success: false, needMore: false, nextSocksState: 0, handshake: null, parsedRequest: null};
+    if (socks5State === 1) {
+        const authLen = socks5Pkg?.length || 0;
+        if (len < authLen) return result.needMore = true, result;
+        let match = len === authLen;
+        for (let i = 0; match && i < authLen; i++) if (chunk[i] !== socks5Pkg[i]) match = false;
+        return result.handshake = new Uint8Array([1, match ? 0 : 1]), result.nextSocksState = match ? 2 : 0, result;
+    }
+    if (socks5State === 2) {
+        if (len < 4) return result.needMore = true, result;
+        if (chunk[0] !== 5 || chunk[1] !== 1) return result;
+        const addrType = chunk[3];
+        const addrLen = addrType === 3 ? (4 < len ? chunk[4] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
+        if (addrLen === null) return result.needMore = true, result;
+        if (!(addrLen > 0)) return result;
+        const addrOffset = addrType === 3 ? 5 : 4;
+        const dataOffset = addrOffset + addrLen + 2;
+        if (len < dataOffset) return result.needMore = true, result;
+        const portOffset = dataOffset - 2;
+        const port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
+        result.handshake = socks5req;
+        result.success = true;
+        result.parsedRequest = {addrType, addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
+        return result;
+    }
+    if (chunk[0] === 5) {
+        if (len < 2) return result.needMore = true, result;
+        const fullLen = 2 + chunk[1];
+        if (len < fullLen) return result.needMore = true, result;
+        const required = socks5Pkg ? 2 : 0;
+        let supported = false;
+        for (let i = 0; i < chunk[1]; i++) {
+            if (chunk[2 + i] === required) {
+                supported = true;
+                break;
+            }
+        }
+        return result.handshake = new Uint8Array([5, supported ? required : 0xFF]), result.nextSocksState = supported ? (required === 2 ? 1 : 2) : 0, result;
+    }
+    if (chunk[0] === 67) {
+        if (len < 48) return result.needMore = true, result;
+        if (chunk[1] === 79) {
+            if (chunk[len - 4] !== 13 || chunk[len - 3] !== 10 || chunk[len - 2] !== 13 || chunk[len - 1] !== 10) return result.needMore = true, result;
+            const secondSpace = chunk.indexOf(32, 8);
+            if (secondSpace !== -1) {
+                if (httpAuthValue) {
+                    let matchAuth = false;
+                    const searchLimit = len > 1024 ? 1024 : len;
+                    for (let p = secondSpace + 30; p + httpAuthValue.length + 6 < searchLimit; p++) {
+                        if (chunk[p] === 66 && chunk[p + 1] === 97 && chunk[p + 2] === 115 && chunk[p + 3] === 105 && chunk[p + 4] === 99 && chunk[p + 5] === 32) {
+                            matchAuth = true;
+                            for (let j = 0; j < httpAuthValue.length; j++) {
+                                if (chunk[p + 6 + j] !== httpAuthValue[j]) {
+                                    matchAuth = false;
+                                    break;
+                                }
+                            }
+                            if (matchAuth) break;
+                        }
+                    }
+                    if (!matchAuth) return result.handshake = httpRes407, result;
+                }
+                let lastColon = -1;
+                for (let i = secondSpace - 3; i >= 8; i--) {
+                    if (chunk[i] === 58) {
+                        lastColon = i;
+                        break;
+                    }
+                }
+                if (lastColon > 8) {
+                    let port = 0;
+                    for (let i = lastColon + 1, digit; i < secondSpace && (digit = chunk[i] - 48) >= 0 && digit <= 9; i++) port = port * 10 + digit;
+                    result.handshake = httpRes200;
+                    result.success = true;
+                    result.parsedRequest = {addrType: 3, addrBytes: chunk.subarray(8, lastColon), dataOffset: len, port, isDns: port === 53, isHttp: true};
+                    return result;
+                }
+            }
+        }
+    }
+    if (len >= 56) {
+        let isTJ = true;
+        for (let i = 0; i < 56; i++) {
+            if (chunk[i] !== hashBytes[i]) {
+                isTJ = false;
+                break;
+            }
+        }
+        if (isTJ) {
+            if (len < 60) return result.needMore = true, result;
+            const addrType = chunk[59];
+            const addrLen = addrType === 3 ? (60 < len ? chunk[60] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
+            if (addrLen === null) return result.needMore = true, result;
+            if (addrLen > 0) {
+                const addrOffset = addrType === 3 ? 61 : 60;
+                const dataOffset = addrOffset + addrLen + 4;
+                if (len < dataOffset) return result.needMore = true, result;
+                const portOffset = addrOffset + addrLen;
+                const port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
+                result.success = true;
+                result.parsedRequest = {addrType, addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
+                return result;
+            }
+        }
+    }
+    let isVL = false;
+    if (len >= 17) {
+        isVL = true;
+        for (let i = 0; i < 16; i++) {
+            if (chunk[i + 1] !== uuidBytes[i]) {
+                isVL = false;
+                break;
+            }
+        }
+    }
+    if (isVL) {
+        if (len < 18) return result.needMore = true, result;
+        const offset = 19 + chunk[17];
+        if (len < offset + 4) return result.needMore = true, result;
+        let addrType = chunk[offset + 2];
+        if (addrType !== 1) addrType += 1;
+        const addrLen = addrType === 3 ? (offset + 3 < len ? chunk[offset + 3] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
+        if (addrLen === null) return result.needMore = true, result;
+        if (addrLen > 0) {
+            const addrOffset = addrType === 3 ? offset + 4 : offset + 3;
+            const dataOffset = addrOffset + addrLen;
+            if (len < dataOffset) return result.needMore = true, result;
+            const port = (chunk[offset] << 8) | chunk[offset + 1];
+            result.handshake = new Uint8Array([chunk[0], 0]);
+            result.success = true;
+            result.parsedRequest = {addrType, addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
+            return result;
+        }
+    }
+    if (chunk[0] === 1 || chunk[0] === 3 || chunk[0] === 4) {
+        if (len < 2) return result.needMore = true, result;
+        const addrLen = chunk[0] === 3 ? (1 < len ? chunk[1] : null) : chunk[0] === 1 ? 4 : chunk[0] === 4 ? 16 : -1;
+        if (addrLen === null) return result.needMore = true, result;
+        if (addrLen > 0) {
+            const addrOffset = chunk[0] === 3 ? 2 : 1;
+            const dataOffset = addrOffset + addrLen + 2;
+            if (len < dataOffset) return result.needMore = true, result;
+            const portOffset = dataOffset - 2;
+            const port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
+            result.success = true;
+            result.parsedRequest = {addrType: chunk[0], addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
+            return result;
+        }
+    }
+    if (chunk[0] !== 1 && chunk[0] !== 3 && chunk[0] !== 4 && len < 56) return result.needMore = true, result;
+    return result;
+};
 const ipv4ToNat64Ipv6 = (ipv4Address, nat64Prefixes) => {
     const parts = ipv4Address.split('.');
     let hexStr = "";
@@ -662,6 +761,10 @@ const createDnsWriter = (state, writable, close, closeAfterResponse) => {
         }
         if (offset < buf.byteLength) pending = buf.slice(offset);
     };
+};
+const addrTypeIs = (hostname) => {
+    const char0 = hostname.charCodeAt(0);
+    return (char0 - 48) >>> 0 > 9 ? (char0 === 91 ? 4 : 3) : isIPv4(hostname) ? 1 : 3;
 };
 const connectNat64 = async (addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp) => {
     const nat64Prefixes = nat64Auth.charCodeAt(0) === 91 ? nat64Auth.slice(1, -1) : nat64Auth;
@@ -748,10 +851,7 @@ const strategyExecutorMap = new Map([
         return connectViaTurnProxy(param, targetIp, port);
     }]
 ]);
-const getUrlParam = (offset, len) => {
-    if (len <= 0) return null;
-    return textDecoder.decode(wasmMem.subarray(dataPtr + offset, dataPtr + offset + len));
-};
+const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|s5|socks|http|https|nat64|turn|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
 const establishTcpConnection = async (parsedRequest, request) => {
@@ -766,17 +866,17 @@ const establishTcpConnection = async (parsedRequest, request) => {
     if (cachedResult !== undefined) {
         list = cachedResult.list, pipeSpeed = cachedResult.pipeSpeed;
     } else {
-        if (clean.length < 6 || clean.length > 1024) {
+        if (clean.length < 6) {
             list.push({type: 0}, {type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
         } else {
-            const urlBytes = textEncoder.encode(clean);
-            wasmMem.set(urlBytes, dataPtr);
-            parseUrlWasm(urlBytes.length);
-            const r = wasmRes;
-            const s5Val = getUrlParam(r[15], r[16]), httpVal = getUrlParam(r[17], r[18]), nat64Val = getUrlParam(r[19], r[20]), turnVal = getUrlParam(r[24], r[25]), ipVal = getUrlParam(r[21], r[22]), httpsVal = getUrlParam(r[26], r[27]), txtipVal = getUrlParam(r[28], r[29]);
-            pipeSpeed = getUrlParam(r[30], r[31]);
-            const proxyAll = r[23] === 1;
-            !proxyAll && list.push({type: 0});
+            const p = Object.create(null);
+            paramRegex.lastIndex = 0;
+            let m;
+            while ((m = paramRegex.exec(clean))) {p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true}
+            if (p.speed) pipeSpeed = p.speed;
+            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https, nat64 = p.gnat64 || p.nat64all || p.nat64, turn = p.gturn || p.turnall || p.turn;
+            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.gnat64 || p.nat64all || p.gturn || p.turnall || p.proxyall || p.globalproxy);
+            if (!proxyAll) list.push({type: 0});
             const add = (v, t, txt) => {
                 if (!v) return;
                 const parts = decodeURIComponent(v).split(',').filter(Boolean);
@@ -791,11 +891,14 @@ const establishTcpConnection = async (parsedRequest, request) => {
                     list.push({type: t, param: parsedParams, concurrent: true});
                 }
             };
-            for (const k of proxyStrategyOrder) k === 'socks' ? add(s5Val, 1) : k === 'http' ? add(httpVal, 2) : k === 'https' ? add(httpsVal, 6) : k === 'turn' ? add(turnVal, 5) : add(nat64Val, 4);
+            for (let i = 0; i < proxyStrategyOrder.length; i++) {
+                const k = proxyStrategyOrder[i];
+                add(k === 'socks' ? s5 : k === 'http' ? http : k === 'https' ? https : k === 'turn' ? turn : nat64, k === 'socks' ? 1 : k === 'http' ? 2 : k === 'https' ? 6 : k === 'turn' ? 5 : 4);
+            }
             if (proxyAll) {
-                !list.length && list.push({type: 0});
+                if (!list.length) list.push({type: 0});
             } else {
-                add(ipVal, 3), add(txtipVal, 3, true);
+                add(p.ip, 3), add(p.txtip, 3, true);
                 list.push({type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
             }
         }
@@ -808,8 +911,8 @@ const establishTcpConnection = async (parsedRequest, request) => {
     for (let i = 0; i < list.length; i++) {
         try {
             const exec = strategyExecutorMap.get(list[i].type);
-            const sub = (list[i].concurrent && Array.isArray(list[i].param)) ? Math.max(1, Math.floor(concurrency / list[i].param.length)) : undefined;
-            const socket = await (list[i].concurrent && Array.isArray(list[i].param) ? Promise.any(list[i].param.map(ip => exec(parsedRequest, ip, sub, list[i].txt))) : exec(parsedRequest, list[i].param, undefined, list[i].txt));
+            const sub = (list[i]['concurrent'] && Array.isArray(list[i].param)) ? Math.max(1, Math.floor(concurrency / list[i].param.length)) : undefined;
+            const socket = await (list[i]['concurrent'] && Array.isArray(list[i].param) ? Promise.any(list[i].param.map(ip => exec(parsedRequest, ip, sub, list[i].txt))) : exec(parsedRequest, list[i].param, undefined, list[i].txt));
             if (socket) return {socket, pipeSpeed};
         } catch {}
     }
@@ -939,16 +1042,12 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
     const allowNeedMore = state.allowNeedMore === true;
     if (allowNeedMore) state.needMore = false;
     let parsedRequest, payload, isSs = false;
-    const ssEnabled = !state.disableSsAead && !!config?.sspass && !state.tcpWriter && state.socks5State === 0;
-    const parseLen = Math.min(chunk.length, 1024);
-    wasmMem.set(chunk.subarray(0, parseLen), dataPtr);
-    const success = parseProtocolWasm(parseLen, state.socks5State);
-    const r = wasmRes;
-    const hLen = r[12];
-    if (hLen > 0) writable.send(wasmMem.slice(dataPtr, dataPtr + hLen));
-    if (!success) {
-        if (r[4] > 0) return state.socks5State = r[4];
-        if (allowNeedMore && r[14] === 1) return state.needMore = true;
+    const ssEnabled = !state.disableSsAead && !!ssAeadPassword && !state.tcpWriter && state.socks5State === 0;
+    const parsed = parseProtocolChunk(chunk, state.socks5State);
+    parsed.handshake && writable.send(parsed.handshake);
+    if (!parsed.success) {
+        if (parsed.nextSocksState > 0) return state.socks5State = parsed.nextSocksState;
+        if (allowNeedMore && parsed.needMore) return state.needMore = true;
         if (ssEnabled && chunk.length >= 34) {
             try {
                 const decryptCtx = await createSsAeadCtx(chunk.subarray(0, 16));
@@ -978,7 +1077,7 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         if (!isSs) return close();
     } else {
         state.socks5State = 0;
-        parsedRequest = {addrType: r[5], port: r[6], dataOffset: r[7], isDns: r[8] === 1, addrBytes: chunk.subarray(r[9], r[9] + r[10]), isHttp: r[11] === 3};
+        parsedRequest = parsed.parsedRequest;
         payload = chunk.subarray(parsedRequest.dataOffset);
     }
     if (parsedRequest.isDns) {
@@ -1062,7 +1161,6 @@ const handleGrpcPost = async (request, reader, buffer, used) => {
             const writable = {
                 send: (chunk) => {
                     const len = chunk.byteLength;
-                    if (!len) return;
                     let varintLen = 1;
                     for (let v = len >>> 7; v; v >>>= 7) varintLen++;
                     const totalPayloadLen = 1 + varintLen + len;
@@ -1143,78 +1241,8 @@ const handleXhttpPost = async (request, reader, xhttpBuffer, used) => {
         }
     }), {headers: xhttpHeaders});
 };
-const getErrorResponse = async (status = 200) => {
-    if (!rawErrorHtml) rawErrorHtml = await decompressWasm(getErrorHtmlPtr, getErrorHtmlLen);
-    return new Response(rawErrorHtml, {status, headers: {'Content-Type': 'text/html; charset=UTF-8'}});
-};
-const getSub = async (request, url, uuid) => {
-    if (uuid && url.searchParams.get('uuid') !== uuid) return await getErrorResponse(404);
-    const ua = (request.headers.get('User-Agent') || '').toLowerCase();
-    const proxyPath = url.searchParams.get('path') || '';
-    const host = url.hostname;
-    const hasVL = url.searchParams.get('vl') === '1';
-    const hasTR = url.searchParams.get('tj') === '1';
-    const hasWS = url.searchParams.get('ws') === '1';
-    const hasXhttp = url.searchParams.get('xhttp') === '1';
-    const hasGRPC = url.searchParams.get('grpc') === '1';
-    const hasECH = url.searchParams.get('ech') === '1';
-    const hasWsNoTLS = url.searchParams.get('wstls') === '0' || url.searchParams.get('wsnotls') === '1';
-    const encPath = encodeURIComponent(proxyPath);
-    const parts = [];
-    const processTemplate = (index, defaultPort = 443) => {
-        if (cachedTemplates[index]) {
-            const tmpl = cachedTemplates[index].replaceAll("{{HOST}}", host).replaceAll("{{PATH}}", encPath);
-            ipListAll.forEach(entry => {
-                const node = parseSubNode(entry, defaultPort);
-                if (!node) return;
-                parts.push(tmpl.replaceAll("{{IP}}", node.ip).replaceAll("{{port}}", node.port).replaceAll("{{name}}", node.name));
-            });
-        }
-    };
-    const addNodes = (base, allowWsNoTLS) => {
-        const wsNoTLS = allowWsNoTLS && hasWsNoTLS;
-        const xhttpBase = base + (allowWsNoTLS ? 3 : 2);
-        const grpcBase = base + (allowWsNoTLS ? 5 : 4);
-        if (hasWS) processTemplate(base + (wsNoTLS ? 2 : hasECH ? 1 : 0), wsNoTLS ? 80 : 443);
-        if (hasXhttp) processTemplate(xhttpBase + (hasECH ? 1 : 0));
-        if (hasGRPC) processTemplate(grpcBase + (hasECH ? 1 : 0));
-    };
-    if (hasVL) addNodes(0, true);
-    if (hasTR) addNodes(7, false);
-    const finalLinks = parts.join("\n");
-    const base64Links = btoa(unescape(encodeURIComponent(finalLinks)));
-    if (ua.includes(strList[18])) return new Response(base64Links, {headers: {'Content-Type': 'text/plain; charset=utf-8'}});
-    if (url.searchParams.get('format') === 'raw') return new Response(finalLinks, {headers: {'Content-Type': 'text/plain; charset=utf-8'}});
-    const target = (url.searchParams.has(strList[5]) || ua.includes(strList[5]) || ua.includes(strList[15]) || ua.includes(strList[16])) ? strList[5]
-        : (url.searchParams.has(strList[11]) || url.searchParams.has(strList[6]) || ua.includes(strList[12]) || ua.includes(strList[6])) ? strList[6]
-            : (url.searchParams.has(strList[13]) || ua.includes(strList[13])) ? strList[7]
-                : (url.searchParams.has(strList[8]) || ua.includes(strList[14])) ? strList[8]
-                    : (url.searchParams.has(strList[9]) || ua.includes(strList[9])) ? strList[9]
-                        : (url.searchParams.has(strList[10]) || ua.includes(strList[10])) ? strList[10] : '';
-    if (target) {
-        const baseUrl = `${url.protocol}//${url.host}${url.pathname}?uuid=${globalThis.subUuid}&format=raw&path=${encPath}&vl=${hasVL ? 1 : 0}&tj=${hasTR ? 1 : 0}&ws=${hasWS ? 1 : 0}&wstls=${hasWsNoTLS ? 0 : 1}&xhttp=${hasXhttp ? 1 : 0}&grpc=${hasGRPC ? 1 : 0}&ech=${hasECH ? 1 : 0}`;
-        const convertUrl = `${strList[0]}/sub?target=${target}&url=${encodeURIComponent(baseUrl)}&insert=false&config=${encodeURIComponent(strList[1])}&emoji=true&scv=true`;
-        try {
-            const response = await fetch(convertUrl, {
-                headers: {'User-Agent': strList[19] + ' for ' + target + ' ' + userAgentSuffix}
-            });
-            if (response.ok) {
-                return new Response(await response.text(), {
-                    headers: {
-                        'Content-Type': target === strList[5] ? 'application/x-yaml; charset=utf-8' : 'text/plain; charset=utf-8',
-                        'Content-Disposition': `attachment; filename*=utf-8''${encodeURIComponent(strList[17])}`,
-                        'Subscription-Userinfo': 'upload=0; download=0; total=1125899906842624; expire=253402271999',
-                        'Profile-Update-Interval': '6'
-                    }
-                });
-            }
-        } catch {}
-    }
-    return new Response(base64Links, {headers: {'Content-Type': 'text/plain; charset=utf-8', 'Subscription-Userinfo': 'upload=0; download=0; total=1125899906842624; expire=253402271999'}});
-};
 export default {
-    async fetch(request, env) {
-        if (!isInitialized) initializeWasm(env);
+    async fetch(request) {
         if (request.method === 'POST' && request.headers.get('content-type') === 'application/grpc-web') {
             const reader = request.body?.getReader({mode: 'byob'});
             if (!reader) return new Response(null, {status: 400});
@@ -1235,21 +1263,11 @@ export default {
         }
         if (request.headers.get('Upgrade') === 'websocket') {
             const {0: clientSocket, 1: webSocket} = new WebSocketPair();
+            // @ts-ignore
             webSocket.accept({allowHalfOpen: true}), webSocket.binaryType = "arraybuffer";
             handleWebSocketConn(webSocket, request);
             return new Response(null, {status: 101, webSocket: clientSocket});
         }
-        const url = new URL(request.url);
-        const {uuid, password, user, pass, sspass} = getEnv(env);
-        if (url.pathname === '/sub') return await getSub(request, url, uuid);
-        if (url.pathname === `/${uuid}` || url.pathname === `/${password}`) {
-            if (!rawHtml) {
-                rawHtml = await decompressWasm(getPanelHtmlPtr, getPanelHtmlLen);
-                const map = {UUID: uuid, PASS: password, HTTPPASS: `${user}:${pass}`, SSPASS: sspass, IPLIST: JSON.stringify(ipListAll), ECHDNS: encodeURIComponent(sharedEchDns)};
-                rawHtml = rawHtml.replace(/{{(UUID|PASS|HTTPPASS|SSPASS|IPLIST|ECHDNS)}}/g, (_, k) => map[k]);
-            }
-            return new Response(rawHtml, {headers: {'Content-Type': 'text/html; charset=UTF-8'}});
-        }
-        return await getErrorResponse();
+        return new Response(html, {status: 200, headers: {'Content-Type': 'text/html; charset=UTF-8'}});
     }
 };
