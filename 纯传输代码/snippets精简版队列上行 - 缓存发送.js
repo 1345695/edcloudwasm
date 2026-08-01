@@ -280,15 +280,15 @@ const establishTcpConnection = async (parsedRequest, request) => {
 };
 const manualPipe = async (readable, writable, close) => {
     const safeBufferSize = bufferSize - maxChunkLen, fastFlushOffset = maxChunkLen << 1;
-    let buffer = new ArrayBuffer(bufferSize), spareBuffer = new ArrayBuffer(maxChunkLen), bufferView = new Uint8Array(buffer);
+    let bufferView = new Uint8Array(bufferSize), spareBuffer = new ArrayBuffer(maxChunkLen);
     let offset = 0, totalBytes = 0, time = 0, timerId = null, resume = null, isReading = false, needsFlush = false, protectFlush = false;
-    let isClose = false, fastFlush = true;
+    let fastFlush = true;
     const flushBuffer = () => {
         if (isReading) return needsFlush = true;
         fastFlush = offset < fastFlushOffset;
-        if (offset > 0 && !isClose) {
+        if (offset > 0) {
             offset > safeBufferSize
-                ? (writable.send(bufferView.subarray(0, offset)), buffer = new ArrayBuffer(bufferSize), bufferView = new Uint8Array(buffer))
+                ? (writable.send(bufferView.subarray(0, offset)), bufferView = new Uint8Array(bufferSize))
                 : writable.send(bufferView.slice(0, offset));
             offset = 0;
         }
@@ -298,12 +298,12 @@ const manualPipe = async (readable, writable, close) => {
     try {
         while (true) {
             const useSpare = offset > 0 && protectFlush;
-            let readBuffer = buffer, readOffset = offset;
+            let readBuffer = bufferView.buffer, readOffset = offset;
             isReading = offset > 0;
             useSpare && (readBuffer = spareBuffer, readOffset = 0, isReading = false);
             const {done, value} = await reader.read(new Uint8Array(readBuffer, readOffset, maxChunkLen));
             isReading = false;
-            useSpare ? (bufferView.set(value, offset), spareBuffer = value.buffer) : (buffer = value.buffer, bufferView = new Uint8Array(buffer));
+            useSpare ? (bufferView.set(value, offset), spareBuffer = value.buffer) : (bufferView = new Uint8Array(value.buffer));
             if (done) break;
             const chunkLen = value.byteLength;
             if (!chunkLen) {
@@ -321,7 +321,7 @@ const manualPipe = async (readable, writable, close) => {
                 offset > safeBufferSize && (totalBytes > startThreshold ? await new Promise(r => resume = r) : flushBuffer());
             }
         }
-    } catch {close?.(), isClose = true} finally {isReading = false, flushBuffer()}
+    } catch {offset = 0, close?.()} finally {isReading = false, flushBuffer()}
 };
 const createBufferedTcpWriter = (tcpWriter, close) => {
     const queue = new Array(2048);

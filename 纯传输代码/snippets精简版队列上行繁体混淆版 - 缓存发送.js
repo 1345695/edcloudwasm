@@ -276,15 +276,15 @@ const 建立傳輸控制連線 = async (已解析請求, 請求) => {
 };
 const 手動資料管線 = async (可讀流, 可寫通道, 關閉連線) => {
     const 安全緩衝區大小 = 緩衝區大小 - 最大區塊長度, 快速刷新偏移量 = 最大區塊長度 << 1;
-    let 緩衝區 = new ArrayBuffer(緩衝區大小), 備用緩衝區 = new ArrayBuffer(最大區塊長度), 緩衝區視圖 = new Uint8Array(緩衝區);
+    let 緩衝區視圖 = new Uint8Array(緩衝區大小), 備用緩衝區 = new ArrayBuffer(最大區塊長度);
     let 偏移量 = 0, 總位元組 = 0, 時間 = 0, 計時器識別 = null, 恢復函式 = null, 正在讀取 = false, 需要刷新 = false, 保護刷新 = false;
-    let 已關閉 = false, 快速刷新 = true;
+    let 快速刷新 = true;
     const 刷新輸出 = () => {
         if (正在讀取) return 需要刷新 = true;
         快速刷新 = 偏移量 < 快速刷新偏移量;
-        if (偏移量 > 0 && !已關閉) {
+        if (偏移量 > 0) {
             偏移量 > 安全緩衝區大小
-                ? (可寫通道.send(緩衝區視圖.subarray(0, 偏移量)), 緩衝區 = new ArrayBuffer(緩衝區大小), 緩衝區視圖 = new Uint8Array(緩衝區))
+                ? (可寫通道.send(緩衝區視圖.subarray(0, 偏移量)), 緩衝區視圖 = new Uint8Array(緩衝區大小))
                 : 可寫通道.send(緩衝區視圖.slice(0, 偏移量));
             偏移量 = 0;
         }
@@ -294,12 +294,12 @@ const 手動資料管線 = async (可讀流, 可寫通道, 關閉連線) => {
     try {
         while (true) {
             const 使用備用 = 偏移量 > 0 && 保護刷新;
-            let 讀取緩衝區 = 緩衝區, 讀取偏移量 = 偏移量;
+            let 讀取緩衝區 = 緩衝區視圖.buffer, 讀取偏移量 = 偏移量;
             正在讀取 = 偏移量 > 0;
             使用備用 && (讀取緩衝區 = 備用緩衝區, 讀取偏移量 = 0, 正在讀取 = false);
             const {done: 是否完成, value: 讀取值} = await 讀取器.read(new Uint8Array(讀取緩衝區, 讀取偏移量, 最大區塊長度));
             正在讀取 = false;
-            使用備用 ? (緩衝區視圖.set(讀取值, 偏移量), 備用緩衝區 = 讀取值.buffer) : (緩衝區 = 讀取值.buffer, 緩衝區視圖 = new Uint8Array(緩衝區));
+            使用備用 ? (緩衝區視圖.set(讀取值, 偏移量), 備用緩衝區 = 讀取值.buffer) : (緩衝區視圖 = new Uint8Array(讀取值.buffer));
             if (是否完成) break;
             const 區塊長度 = 讀取值.byteLength;
             if (!區塊長度) {
@@ -317,7 +317,7 @@ const 手動資料管線 = async (可讀流, 可寫通道, 關閉連線) => {
                 偏移量 > 安全緩衝區大小 && (總位元組 > 啟動閾值 ? await new Promise(結果值 => 恢復函式 = 結果值) : 刷新輸出());
             }
         }
-    } catch {關閉連線?.(), 已關閉 = true} finally {正在讀取 = false, 刷新輸出()}
+    } catch {偏移量 = 0, 關閉連線?.()} finally {正在讀取 = false, 刷新輸出()}
 };
 const 建立緩衝傳輸控制寫入器 = (寫入函式, 關閉連線) => {
     const 佇列 = new Array(2048);
