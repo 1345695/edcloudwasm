@@ -232,7 +232,7 @@ const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLi
 let urlListCacheIndex = 0;
 const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|s5|socks|http|https|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
 const establishTcpConnection = async (parsedRequest, request) => {
-    let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [], pipeSpeed;
+    let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [], speed;
     if (l > 3 && clean.charCodeAt(l - 4) === 47 && clean.charCodeAt(l - 3) === 84 && clean.charCodeAt(l - 2) === 117 && clean.charCodeAt(l - 1) === 110) {
         clean = clean.slice(0, l - 4);
     } else {
@@ -241,13 +241,13 @@ const establishTcpConnection = async (parsedRequest, request) => {
     }
     const cachedResult = urlListCacheDict.get(clean);
     if (cachedResult !== undefined) {
-        list = cachedResult.list, pipeSpeed = cachedResult.pipeSpeed;
+        list = cachedResult.list, speed = cachedResult.speed;
     } else {
         if (clean.length < 6) {list.push({type: 0}, {type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US})} else {
             paramRegex.lastIndex = 0;
             let m, p = Object.create(null);
             while ((m = paramRegex.exec(clean))) p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true;
-            if (p.speed) pipeSpeed = p.speed;
+            if (p.speed) speed = p.speed;
             const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https;
             const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.proxyall || p.globalproxy);
             if (!proxyAll) list.push({type: 0});
@@ -268,22 +268,22 @@ const establishTcpConnection = async (parsedRequest, request) => {
         const oldKey = urlListCacheKeys[urlListCacheIndex];
         if (oldKey !== undefined) urlListCacheDict.delete(oldKey);
         urlListCacheKeys[urlListCacheIndex] = clean;
-        urlListCacheDict.set(clean, {list, pipeSpeed});
+        urlListCacheDict.set(clean, {list, speed});
         urlListCacheIndex = (urlListCacheIndex + 1) % urlParamCacheLimit;
     }
     for (let i = 0; i < list.length; i++) {
         try {
             const socket = await strategyExecutorMap.get(list[i].type)?.(parsedRequest, list[i].param, list[i].txt);
-            if (socket) return {socket, pipeSpeed};
+            if (socket) return {socket, speed};
         } catch {}
     }
     return null;
 };
-const manualPipe = async (readable, writable, close, pipeSpeed) => {
-    const n = parseFloat(pipeSpeed), speedLimit = n > 0;
+const manualPipe = async (readable, writable, close, speed) => {
+    const n = parseFloat(speed), speedLimit = n > 0;
     let pipeBufferSize = bufferSize, pipeFlushTime = flushTime, pipeStartThreshold = startThreshold;
     if (speedLimit) {
-        pipeStartThreshold = n * 1048576;
+        pipeStartThreshold = n > 256 ? Number.MAX_SAFE_INTEGER : n * 1048576;
         let bestSize = pipeBufferSize, bestTime = Infinity, bestDiff = Infinity;
         for (let size = 262144; size <= 524288; size += 65536) {
             const timeMs = Math.max(2, Math.round(size * 1000 / pipeStartThreshold)), diff = Math.abs(size * 1000 / timeMs - pipeStartThreshold);
@@ -436,7 +436,7 @@ const handleWebSocketConn = async (webSocket, request) => {
                 const tcpWriter = tcpSocket.writable.getWriter();
                 if (payload.byteLength) tcpWriter.write(payload);
                 tcpWrite = createBufferedTcpWriter(tcpWriter, close);
-                manualPipe(tcpSocket.readable, webSocket, close, tcpResult.pipeSpeed);
+                manualPipe(tcpSocket.readable, webSocket, close, tcpResult.speed);
             })();
         } catch {close()}
     };

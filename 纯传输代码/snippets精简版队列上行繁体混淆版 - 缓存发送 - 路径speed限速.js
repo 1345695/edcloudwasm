@@ -228,7 +228,7 @@ const 網址列表快取字典 = new Map(), 網址列表快取鍵 = new Array(�
 let 網址列表快取索引 = 0;
 const 參數匹配正則 = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|s5|socks|http|https|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
 const 建立傳輸控制連線 = async (已解析請求, 請求) => {
-    let 網址字串 = 請求.url, 清理路徑 = 網址字串.slice(網址字串.indexOf('/', 10) + 1), 路徑長度 = 清理路徑.length, 策略列表 = [], 管線速度;
+    let 網址字串 = 請求.url, 清理路徑 = 網址字串.slice(網址字串.indexOf('/', 10) + 1), 路徑長度 = 清理路徑.length, 策略列表 = [], 速度;
     if (路徑長度 > 3 && 清理路徑.charCodeAt(路徑長度 - 4) === 47 && 清理路徑.charCodeAt(路徑長度 - 3) === 84 && 清理路徑.charCodeAt(路徑長度 - 2) === 117 && 清理路徑.charCodeAt(路徑長度 - 1) === 110) {
         清理路徑 = 清理路徑.slice(0, 路徑長度 - 4);
     } else {
@@ -237,13 +237,13 @@ const 建立傳輸控制連線 = async (已解析請求, 請求) => {
     }
     const 已快取結果 = 網址列表快取字典.get(清理路徑);
     if (已快取結果 !== undefined) {
-        策略列表 = 已快取結果.策略列表, 管線速度 = 已快取結果.管線速度;
+        策略列表 = 已快取結果.策略列表, 速度 = 已快取結果.速度;
     } else {
         if (清理路徑.length < 6) {策略列表.push({類型: 0}, {類型: 3, 參數: 機房到代理映射.get(請求.cf?.colo) ?? 代理位址表.US})} else {
             參數匹配正則.lastIndex = 0;
             let 匹配項, 暫指標 = Object.create(null);
             while ((匹配項 = 參數匹配正則.exec(清理路徑))) 暫指標[(匹配項[1] || 匹配項[3]).toLowerCase()] = 匹配項[2] ? (匹配項[2].charCodeAt(匹配項[2].length - 1) === 61 ? 匹配項[2].slice(0, -1) : 匹配項[2]) : true;
-            if (暫指標.speed) 管線速度 = 暫指標.speed;
+            if (暫指標.speed) 速度 = 暫指標.speed;
             const 通道設定 = 暫指標.gs5 || 暫指標.s5all || 暫指標.s5 || 暫指標.socks, 超文本設定 = 暫指標.ghttp || 暫指標.httpall || 暫指標.http, 安全超文本設定 = 暫指標.ghttps || 暫指標.httpsall || 暫指標.https;
             const 全域代理 = !!(暫指標.gs5 || 暫指標.s5all || 暫指標.ghttp || 暫指標.httpall || 暫指標.ghttps || 暫指標.httpsall || 暫指標.proxyall || 暫指標.globalproxy);
             if (!全域代理) 策略列表.push({類型: 0});
@@ -264,22 +264,22 @@ const 建立傳輸控制連線 = async (已解析請求, 請求) => {
         const 舊鍵 = 網址列表快取鍵[網址列表快取索引];
         if (舊鍵 !== undefined) 網址列表快取字典.delete(舊鍵);
         網址列表快取鍵[網址列表快取索引] = 清理路徑;
-        網址列表快取字典.set(清理路徑, {策略列表, 管線速度});
+        網址列表快取字典.set(清理路徑, {策略列表, 速度});
         網址列表快取索引 = (網址列表快取索引 + 1) % 網址參數快取限制;
     }
     for (let 索引 = 0; 索引 < 策略列表.length; 索引++) {
         try {
             const 連線插槽 = await 策略執行器映射.get(策略列表[索引].類型)?.(已解析請求, 策略列表[索引].參數, 策略列表[索引].文字記錄);
-            if (連線插槽) return {連線插槽, 管線速度};
+            if (連線插槽) return {連線插槽, 速度};
         } catch {}
     }
     return null;
 };
-const 手動資料管線 = async (可讀流, 可寫通道, 關閉連線, 管線速度) => {
-    const 數值 = parseFloat(管線速度), 啟用限速 = 數值 > 0;
+const 手動資料管線 = async (可讀流, 可寫通道, 關閉連線, 速度) => {
+    const 數值 = parseFloat(速度), 啟用限速 = 數值 > 0;
     let 管線緩衝區大小 = 緩衝區大小, 管線刷新時間 = 刷新時間, 管線啟動閾值 = 啟動閾值;
     if (啟用限速) {
-        管線啟動閾值 = 數值 * 1048576;
+        管線啟動閾值 = 數值 > 256 ? Number.MAX_SAFE_INTEGER : 數值 * 1048576;
         let 最佳大小 = 管線緩衝區大小, 最佳時間 = Infinity, 最佳差值 = Infinity;
         for (let 大小 = 262144; 大小 <= 524288; 大小 += 65536) {
             const 時間毫秒 = Math.max(2, Math.round(大小 * 1000 / 管線啟動閾值)), 絕對差值 = Math.abs(大小 * 1000 / 時間毫秒 - 管線啟動閾值);
@@ -432,7 +432,7 @@ const 處理網頁套接字連線 = async (網頁套接字連線, 請求) => {
                 const 寫入函式 = 傳輸控制插槽.writable.getWriter();
                 if (負載資料.byteLength) 寫入函式.write(負載資料);
                 傳輸控制寫入器 = 建立緩衝傳輸控制寫入器(寫入函式, 關閉連線);
-                手動資料管線(傳輸控制插槽.readable, 網頁套接字連線, 關閉連線, 傳輸控制結果.管線速度);
+                手動資料管線(傳輸控制插槽.readable, 網頁套接字連線, 關閉連線, 傳輸控制結果.速度);
             })();
         } catch {關閉連線()}
     };

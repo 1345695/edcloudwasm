@@ -771,7 +771,7 @@ const getUrlParam = (offset, len) => {
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
 const establishTcpConnection = async (parsedRequest, request) => {
-    let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [], pipeSpeed;
+    let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [], speed;
     if (l > 3 && clean.charCodeAt(l - 4) === 47 && clean.charCodeAt(l - 3) === 84 && clean.charCodeAt(l - 2) === 117 && clean.charCodeAt(l - 1) === 110) {
         clean = clean.slice(0, l - 4);
     } else {
@@ -780,7 +780,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
     }
     const cachedResult = urlListCacheDict.get(clean);
     if (cachedResult !== undefined) {
-        list = cachedResult.list, pipeSpeed = cachedResult.pipeSpeed;
+        list = cachedResult.list, speed = cachedResult.speed;
     } else {
         if (clean.length < 6 || clean.length > 1024) {
             list.push({type: 0}, {type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
@@ -790,7 +790,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
             parseUrlWasm(urlBytes.length);
             const r = wasmRes;
             const s5Val = getUrlParam(r[15], r[16]), httpVal = getUrlParam(r[17], r[18]), nat64Val = getUrlParam(r[19], r[20]), turnVal = getUrlParam(r[24], r[25]), ipVal = getUrlParam(r[21], r[22]), httpsVal = getUrlParam(r[26], r[27]), txtipVal = getUrlParam(r[28], r[29]);
-            pipeSpeed = getUrlParam(r[30], r[31]);
+            speed = getUrlParam(r[30], r[31]);
             const proxyAll = r[23] === 1;
             !proxyAll && list.push({type: 0});
             const add = (v, t, txt) => {
@@ -818,7 +818,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         const oldKey = urlListCacheKeys[urlListCacheIndex];
         if (oldKey !== undefined) urlListCacheDict.delete(oldKey);
         urlListCacheKeys[urlListCacheIndex] = clean;
-        urlListCacheDict.set(clean, {list, pipeSpeed});
+        urlListCacheDict.set(clean, {list, speed});
         urlListCacheIndex = (urlListCacheIndex + 1) % urlParamCacheLimit;
     }
     for (let i = 0; i < list.length; i++) {
@@ -826,16 +826,16 @@ const establishTcpConnection = async (parsedRequest, request) => {
             const exec = strategyExecutorMap.get(list[i].type);
             const sub = (list[i].concurrent && Array.isArray(list[i].param)) ? Math.max(1, Math.floor(concurrency / list[i].param.length)) : undefined;
             const socket = await (list[i].concurrent && Array.isArray(list[i].param) ? Promise.any(list[i].param.map(ip => exec(parsedRequest, ip, sub, list[i].txt))) : exec(parsedRequest, list[i].param, undefined, list[i].txt));
-            if (socket) return {socket, pipeSpeed};
+            if (socket) return {socket, speed};
         } catch {}
     }
     return null;
 };
-const manualPipe = async (readable, writable, close, pipeSpeed) => {
-    const n = parseFloat(pipeSpeed), speedLimit = n > 0;
+const manualPipe = async (readable, writable, close, speed) => {
+    const n = parseFloat(speed), speedLimit = n > 0;
     let pipeBufferSize = bufferSize, pipeFlushTime = flushTime, pipeStartThreshold = startThreshold;
     if (speedLimit) {
-        pipeStartThreshold = n * 1048576;
+        pipeStartThreshold = n > 256 ? Number.MAX_SAFE_INTEGER : n * 1048576;
         let bestSize = pipeBufferSize, bestTime = Infinity, bestDiff = Infinity;
         for (let size = 262144; size <= 524288; size += 65536) {
             const timeMs = Math.max(2, Math.round(size * 1000 / pipeStartThreshold)), diff = Math.abs(size * 1000 / timeMs - pipeStartThreshold);
@@ -1031,12 +1031,12 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
                     send: (chunk) => {
                         chunk?.byteLength && ssSendQueue(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
                     }
-                }, close, tcpResult.pipeSpeed);
+                }, close, tcpResult.speed);
             })().catch(close);
         } else {
             state.tcpWriter = bufferedTcpWriter;
             if (state.tcpSocket.extra?.length) writable.send(state.tcpSocket.extra);
-            manualPipe(state.tcpSocket.readable, writable, close, tcpResult.pipeSpeed);
+            manualPipe(state.tcpSocket.readable, writable, close, tcpResult.speed);
         }
     }
 };

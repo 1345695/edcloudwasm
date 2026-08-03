@@ -5,6 +5,7 @@ const uuid = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 //**警告**:trojan使用的sha224密钥，需要自己计算，当前设置为密码666的密钥
 //**警告**:trojan使用的sha224密钥计算网址：https://www.lzltool.com/data-sha224
 const passWordSha224 = '509eece82eb6910bebef9af9496092d3244b6c0d69ef3aaa4b12c565';
+// URL路径添加 speed=N 可限制下行速度，单位为 MB/s，例如 /?speed=50。
 const bufferSize = 256 * 1024;
 const startThreshold = 50 * 1024 * 1024;
 const maxChunkLen = 64 * 1024;
@@ -322,16 +323,16 @@ const strategyExecutorMap = new Map([
         return connectProxyIp(param, limit, txt);
     }]
 ]);
-const paramRegex = /(gs5|s5all|ghttp|httpall|ghttps|httpsall|s5|socks|http|https|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
+const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|s5|socks|http|https|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
 const establishTcpConnection = async (parsedRequest, request) => {
-    let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [];
+    let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [], speed;
     const c = clean.charCodeAt(l - 1);
     if (c === 47 || c === 61) clean = clean.slice(0, l - 1);
-    const cachedList = urlListCacheDict.get(clean);
-    if (cachedList !== undefined) {
-        list = cachedList;
+    const cachedResult = urlListCacheDict.get(clean);
+    if (cachedResult !== undefined) {
+        list = cachedResult.list, speed = cachedResult.speed;
     } else {
         if (clean.length < 6) {
             list.push({type: 0}, {type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
@@ -340,6 +341,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
             paramRegex.lastIndex = 0;
             let m;
             while ((m = paramRegex.exec(clean))) {p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true}
+            if (p.speed) speed = p.speed;
             const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https;
             const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.proxyall || p.globalproxy);
             if (!proxyAll) list.push({type: 0});
@@ -370,7 +372,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         const oldKey = urlListCacheKeys[urlListCacheIndex];
         if (oldKey !== undefined) urlListCacheDict.delete(oldKey);
         urlListCacheKeys[urlListCacheIndex] = clean;
-        urlListCacheDict.set(clean, list);
+        urlListCacheDict.set(clean, {list, speed});
         urlListCacheIndex = (urlListCacheIndex + 1) % urlParamCacheLimit;
     }
     for (let i = 0; i < list.length; i++) {
@@ -378,14 +380,25 @@ const establishTcpConnection = async (parsedRequest, request) => {
             const exec = strategyExecutorMap.get(list[i].type);
             const sub = (list[i]['concurrent'] && Array.isArray(list[i].param)) ? Math.max(1, Math.floor(concurrency / list[i].param.length)) : undefined;
             const socket = await (list[i]['concurrent'] && Array.isArray(list[i].param) ? Promise.any(list[i].param.map(ip => exec(parsedRequest, ip, sub, list[i].txt))) : exec(parsedRequest, list[i].param, undefined, list[i].txt));
-            if (socket) return socket;
+            if (socket) return {socket, speed};
         } catch {}
     }
     return null;
 };
-const manualPipe = async (readable, writable, close) => {
-    const safeBufferSize = bufferSize - maxChunkLen, fastFlushOffset = maxChunkLen << 1;
-    let bufferView = new Uint8Array(bufferSize), spareBuffer = new ArrayBuffer(maxChunkLen);
+const manualPipe = async (readable, writable, close, speed) => {
+    const n = parseFloat(speed), speedLimit = n > 0;
+    let pipeBufferSize = bufferSize, pipeFlushTime = flushTime, pipeStartThreshold = startThreshold;
+    if (speedLimit) {
+        pipeStartThreshold = n > 256 ? Number.MAX_SAFE_INTEGER : n * 1048576;
+        let bestSize = pipeBufferSize, bestTime = Infinity, bestDiff = Infinity;
+        for (let size = 262144; size <= 524288; size += 65536) {
+            const timeMs = Math.max(2, Math.round(size * 1000 / pipeStartThreshold)), diff = Math.abs(size * 1000 / timeMs - pipeStartThreshold);
+            if (diff < bestDiff || (diff === bestDiff && timeMs < bestTime)) bestSize = size, bestTime = timeMs, bestDiff = diff;
+        }
+        pipeBufferSize = bestSize, pipeFlushTime = bestTime;
+    }
+    const safeBufferSize = pipeBufferSize - maxChunkLen, fastFlushOffset = maxChunkLen << 1;
+    let bufferView = new Uint8Array(pipeBufferSize), spareBuffer = new ArrayBuffer(maxChunkLen);
     let offset = 0, totalBytes = 0, time = 0, timerId = null, resume = null, isReading = false, needsFlush = false, protectFlush = false;
     let fastFlush = true;
     const flushBuffer = () => {
@@ -393,7 +406,7 @@ const manualPipe = async (readable, writable, close) => {
         fastFlush = offset < fastFlushOffset;
         if (offset > 0) {
             offset > safeBufferSize
-                ? (writable.send(bufferView.subarray(0, offset)), bufferView = new Uint8Array(bufferSize))
+                ? (writable.send(bufferView.subarray(0, offset)), bufferView = new Uint8Array(pipeBufferSize))
                 : writable.send(bufferView.slice(0, offset));
             offset = 0;
         }
@@ -420,10 +433,11 @@ const manualPipe = async (readable, writable, close) => {
                 flushBuffer();
             } else {
                 if (fastFlush || chunkLen < 28672) {
-                    totalBytes = 0, time = 2;
-                } else if (totalBytes > startThreshold) time = flushTime;
+                    if (!speedLimit) totalBytes = 0;
+                    time = 2;
+                } else if (totalBytes > pipeStartThreshold) time = pipeFlushTime;
                 timerId ||= setTimeout(flushBuffer, time), protectFlush = chunkLen < maxChunkLen;
-                offset > safeBufferSize && (totalBytes > startThreshold ? await new Promise(r => resume = r) : flushBuffer());
+                offset > safeBufferSize && (totalBytes > pipeStartThreshold ? await new Promise(r => resume = r) : flushBuffer());
             }
         }
     } catch {offset = 0, close?.()} finally {isReading = false, flushBuffer()}
@@ -506,12 +520,13 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         if (dnsPack?.byteLength) writable.send(dnsPack);
         if (!isEarlyData) return close();
     } else {
-        state.tcpSocket = await establishTcpConnection(parsedRequest, request);
-        if (!state.tcpSocket) return close();
+        const tcpResult = await establishTcpConnection(parsedRequest, request);
+        if (!tcpResult) return close();
+        state.tcpSocket = tcpResult.socket;
         const tcpWriter = state.tcpSocket.writable.getWriter();
         if (payload.byteLength) tcpWriter.write(payload);
         state.tcpWriter = createBufferedTcpWriter(tcpWriter, close);
-        manualPipe(state.tcpSocket.readable, writable, close);
+        manualPipe(state.tcpSocket.readable, writable, close, tcpResult.speed);
     }
 };
 const handleWebSocketConn = async (webSocket, request) => {
