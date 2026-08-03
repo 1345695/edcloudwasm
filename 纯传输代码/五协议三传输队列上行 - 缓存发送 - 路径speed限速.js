@@ -13,9 +13,9 @@
  * https/ghttps/httpsall      - 直连失败HTTPS代理 / 全局HTTPS          示例: https=user1:pass1@host1:port1,user2:pass2@host2:port2
  * nat64/gnat64/nat64all      - 直连失败NAT64转换 / 全局NAT64          示例: nat64=64:ff9b::,64:ff9b:1::
  * turn/gturn/turnall         - 直连失败TURN代理 / 全局TURN            示例: turn=user1:pass1@host1:port1,user2:pass2@host2:port2
- * ip/pyip/proxyip            - 直连失败时的备用IP                     示例: ip=1.2.3.4:443,5.6.7.8:443
+ * ip/txtip/proxyip           - 直连失败时的备用IP                     示例: ip=1.2.3.4:443,5.6.7.8:443
  * proxyall/globalproxy       - 全局代理标志,无s5/http/https参数时纯直连 示例: proxyall=1
- * speed                      - 下行限速,单位默认MB/s                  示例: speed=50 表示50MB/s
+ * speed                      - 下行限速,单位默认MB/s，大于256时解除限速  示例: speed=50 表示50MB/s
  * ==========================================================================================================================*/
 import {connect} from 'cloudflare:sockets';
 //**警告**:不看开头注释直接把域名地址扔浏览器里会收获彩蛋一枚
