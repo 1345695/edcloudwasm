@@ -803,11 +803,27 @@ const connectProxyIp = async (param, limit, txt) => {
             }
             resolvedIps = resolvedIps.slice(0, limit);
         }
-        const connectionPromises = resolvedIps.map(ip => {
+        let settled = false, winner = null;
+        const sockets = new Array(resolvedIps.length);
+        const closeSocket = socket => {try {socket?.close()} catch {}};
+        const connectionPromises = resolvedIps.map((ip, i) => {
             const [host, port] = parseHostPort(ip, 443);
-            return createConnect(host, port);
+            const socket = connect({hostname: host, port});
+            sockets[i] = socket;
+            return createConnect(host, port, undefined, socket).then(openedSocket => {
+                if (settled && openedSocket !== winner) closeSocket(openedSocket);
+                return openedSocket;
+            });
         });
-        return await Promise.any(connectionPromises);
+        return await Promise.any(connectionPromises).then(socket => {
+            settled = true, winner = socket;
+            for (const other of sockets) if (other !== socket) closeSocket(other);
+            return socket;
+        }, err => {
+            settled = true;
+            for (const socket of sockets) closeSocket(socket);
+            throw err;
+        });
     }
     const [host, port] = parseHostPort(param, 443);
     return concurrentConnect(host, port, limit);
