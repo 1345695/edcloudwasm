@@ -506,29 +506,23 @@ const {TlsClient} = (() => {
         return r
     }
     function te(e, t) {
-        const n = function (e) {
-            const t = new Uint8Array(e);
-            return t[3] &= 15, t[7] &= 15, t[11] &= 15, t[15] &= 15, t[4] &= 252, t[8] &= 252, t[12] &= 252, t
-        }(e.slice(0, 16)), r = e.slice(16, 32);
-        let i = [0n, 0n, 0n, 0n, 0n];
-        const s = [0x3ffffffn & BigInt(n[0] | n[1] << 8 | n[2] << 16 | n[3] << 24), 0x3ffffffn & BigInt(n[3] >> 2 | n[4] << 6 | n[5] << 14 | n[6] << 22), 0x3ffffffn & BigInt(n[6] >> 4 | n[7] << 4 | n[8] << 12 | n[9] << 20), 0x3ffffffn & BigInt(n[9] >> 6 | n[10] << 2 | n[11] << 10 | n[12] << 18), 0x3ffffffn & BigInt(n[13] | n[14] << 8 | n[15] << 16 | n[16] << 24)];
+        const n = e => {
+            let t = 0n;
+            for (let n = e.length - 1; n >= 0; n--) t = t << 8n | BigInt(e[n]);
+            return t
+        }, r = (1n << 130n) - 5n, i = (1n << 128n) - 1n, sBytes = e.slice(0, 16), a = n(e.slice(16, 32));
+        sBytes[3] &= 15, sBytes[7] &= 15, sBytes[11] &= 15, sBytes[15] &= 15;
+        sBytes[4] &= 252, sBytes[8] &= 252, sBytes[12] &= 252;
+        const s = n(sBytes);
+        let h = 0n;
         for (let e = 0; e < t.length; e += 16) {
-            const n = t.slice(e, e + 16), r = new Uint8Array(17);
-            r.set(n), r[n.length] = 1, i[0] += BigInt(r[0] | r[1] << 8 | r[2] << 16 | (3 & r[3]) << 24), i[1] += BigInt(r[3] >> 2 | r[4] << 6 | r[5] << 14 | (15 & r[6]) << 22), i[2] += BigInt(r[6] >> 4 | r[7] << 4 | r[8] << 12 | (63 & r[9]) << 20), i[3] += BigInt(r[9] >> 6 | r[10] << 2 | r[11] << 10 | r[12] << 18), i[4] += BigInt(r[13] | r[14] << 8 | r[15] << 16 | r[16] << 24);
-            const a = [0n, 0n, 0n, 0n, 0n];
-            for (let e = 0; e < 5; e++) for (let t = 0; t < 5; t++) {
-                const n = e + t;
-                n < 5 ? a[n] += i[e] * s[t] : a[n - 5] += i[e] * s[t] * 5n
-            }
-            let h = 0n;
-            for (let e = 0; e < 5; e++) a[e] += h, i[e] = 0x3ffffffn & a[e], h = a[e] >> 26n;
-            i[0] += 5n * h, h = i[0] >> 26n, i[0] &= 0x3ffffffn, i[1] += h
+            const i = t.subarray(e, Math.min(e + 16, t.length)), a = n(i) + (1n << BigInt(8 * i.length));
+            h = (h + a) * s % r
         }
-        let a = i[0] | i[1] << 26n | i[2] << 52n | i[3] << 78n | i[4] << 104n;
-        a = a + r.reduce((e, t, n) => e + (BigInt(t) << BigInt(8 * n)), 0n) & (1n << 128n) - 1n;
-        const h = new Uint8Array(16);
-        for (let e = 0; e < 16; e++) h[e] = Number(a >> BigInt(8 * e) & 0xffn);
-        return h
+        h = h + a & i;
+        const c = new Uint8Array(16);
+        for (let e = 0; e < 16; e++) c[e] = Number(h >> BigInt(8 * e) & 0xffn);
+        return c
     }
     function ne(e, t, n, r) {
         const i = Z(e, 0, t).slice(0, 32), s = ee(e, t, n), a = (16 - r.length % 16) % 16, h = (16 - s.length % 16) % 16, c = new Uint8Array(r.length + a + s.length + h + 16);
@@ -558,6 +552,7 @@ const {TlsClient} = (() => {
         next() {
             if (this.b.length < 5) return null;
             const e = this.b[0], t = R(this.b, 1), n = R(this.b, 3);
+            if (n > 18432) throw 0;
             if (this.b.length < 5 + n) return null;
             const r = this.b.slice(5, 5 + n);
             return this.b = this.b.slice(5 + n), {type: e, version: t, length: n, fragment: r}
@@ -695,12 +690,20 @@ const {TlsClient} = (() => {
         const n = e.slice(), r = ye(t);
         for (let e = 0; e < 8; e++) n[n.length - 8 + e] ^= r[e];
         return n
-    }, we = (e, t, n, r) => Promise.all([O(e, t, "key", P, n), O(e, t, "iv", P, r)]);
+    }, we = (e, t, n, r) => Promise.all([O(e, t, "key", P, n), O(e, t, "iv", P, r)]), de = e => {
+        let t = e.length - 1;
+        for (; t >= 0 && 0 === e[t];) t--;
+        if (t < 0) throw 0;
+        return {data: e.slice(0, t), type: e[t]}
+    }, ge = 0xffffffffffffffffn;
     class TlsClient {
-        constructor(e, t = {}) {this.sk = e, this.sn = t.serverName || "", this.s13 = !1 !== t.tls13, this.s12 = !1 !== t.tls12, this.alpn = Array.isArray(t.alpn) ? t.alpn : t.alpn ? [t.alpn] : null, this.to = t.timeout ?? 3e4, this.cr = D(32), this.sr = null, this.hk = [], this.hc = !1, this.na = null, this.cs = null, this.cc = null, this.is13 = !1, this.ms = null, this.hs = null, this.cwk = null, this.swk = null, this.cwi = null, this.swi = null, this.chk = null, this.shk = null, this.chi = null, this.shi = null, this.cak = null, this.sak = null, this.cai = null, this.sai = null, this.csn = 0n, this.ssn = 0n, this.rp = new ae, this.hp = new he, this.kps = new Map, this.ekp = null, this.sc = !1, this.rb = new Uint8Array(65536)}
+        constructor(e, t = {}) {this.sk = e, this.sn = t.serverName || "", this.s13 = !1 !== t.tls13, this.s12 = !1 !== t.tls12, this.alpn = Array.isArray(t.alpn) ? t.alpn : t.alpn ? [t.alpn] : null, this.to = t.timeout ?? 3e4, this.cr = D(32), this.sr = null, this.hk = [], this.hc = !1, this.na = null, this.cs = null, this.cc = null, this.is13 = !1, this.ms = null, this.hs = null, this.cwk = null, this.swk = null, this.cwi = null, this.swi = null, this.chk = null, this.shk = null, this.chi = null, this.shi = null, this.cak = null, this.sak = null, this.cai = null, this.sai = null, this.cats = null, this.sats = null, this.csn = 0n, this.ssn = 0n, this.rp = new ae, this.hp = new he, this.kps = new Map, this.ekp = null, this.sc = !1, this.pq = [], this.rr = [], this.closed = !1, this.closing = !1, this.failed = !1, this.wq = Promise.resolve(), this.rq = Promise.resolve(), this.cp = null, this.rb = new Uint8Array(65536)}
         rh(e) {this.hk.push(e)}
         ts() {return 1 === this.hk.length ? this.hk[0] : W(...this.hk)}
         gfc(e) {return U.get(e) || null}
+        fc() {if (this.csn > ge) throw 0; return this.csn++}
+        fs() {if (this.ssn > ge) throw 0; return this.ssn++}
+        fail() {this.failed = !0, this.closed = !0; try {this.sk.close()} catch {}}
         async rc(e, b) {
             if (!this.to) return b ? e.read(b) : e.read();
             let t;
@@ -767,9 +770,9 @@ const {TlsClient} = (() => {
                     for (this.hp.feed(r.fragment); e = this.hp.next();) {
                         if (e.type !== c) continue;
                         this.rh(e.raw);
-                        const t = ce(e.body);
-                        if (this.sr = t.sr, this.cs = t.cs, this.cc = this.gfc(t.cs), this.is13 = t.isTls13, this.na = t.alpn || null, !this.cc) throw 0;
-                        return t
+                        const t = ce(e.body), n = this.gfc(t.cs);
+                        if (!n || t.comp || t.isTls13 !== !!n.tls13 || t.isTls13 && !this.s13 || !t.isTls13 && (!this.s12 || t.sv !== 771)) throw 0;
+                        return this.sr = t.sr, this.cs = t.cs, this.cc = n, this.is13 = t.isTls13, this.na = t.alpn || null, t
                     }
                 }
             }
@@ -780,7 +783,7 @@ const {TlsClient} = (() => {
                 switch (e.type) {
                     case f: {
                         this.rh(e.raw);
-                        const t = le(e.body, 1);
+                        const t = le(e.body);
                         if (!t) throw 0;
                         await this.ac(t);
                         break
@@ -841,7 +844,7 @@ const {TlsClient} = (() => {
                         break
                     }
                     case f: {
-                        const t = le(e.body);
+                        const t = le(e.body, 1);
                         if (!t) throw 0;
                         await this.ac(t), this.rh(e.raw);
                         break
@@ -868,28 +871,28 @@ const {TlsClient} = (() => {
                     throw 0
                 }
                 if (e.type !== a) return;
-                const t = await this.d13h(e.fragment), n = t[t.length - 1], h = t.slice(0, -1);
+                const {data: t, type: n} = await this.d13h(e.fragment), h = t;
                 if (n === s) {
                     this.hp.feed(h);
                     for (let e; e = this.hp.next();) if (await H(e), C) return 1
                 }
             }, "err");
             const T = await G(c, this.ts()), E = await O(c, this.hs, "derived", await G(c, P), o), L = await X(c, E, new Uint8Array(o)), K = await O(c, L, "c ap traffic", T, o), U = await O(c, L, "s ap traffic", T, o);
-            [this.cak, this.cai] = await we(c, K, u, p), [this.sak, this.sai] = await we(c, U, u, p);
+            this.cats = K, this.sats = U, [this.cak, this.cai] = await we(c, K, u, p), [this.sak, this.sai] = await we(c, U, u, p);
             const x = await O(c, S, "finished", P, o), _ = await $(c, x, await G(c, this.ts())), B = se(g, _);
             this.rh(B), await t.write(ie(a, await this.e13h(W(B, [s])))), this.csn = 0n, this.ssn = 0n
         }
-        async e12(e, n) {
-            const r = this.csn++, i = ye(r), s = W(i, [n], B(t), B(e.length));
+        async e12(e, n, r = this.fc()) {
+            const i = ye(r), s = W(i, [n], B(t), B(e.length));
             if (this.cc.chacha) {
                 const t = pe(this.cwi, r);
                 return ne(this.cwk, t, e, s)
             }
-            const a = D(8);
+            const a = i;
             return W(a, await j(this.cwk, W(this.cwi, a), e, s))
         }
-        async d12(e, n) {
-            const r = this.ssn++, i = ye(r);
+        async d12(e, n, r = this.fs()) {
+            const i = ye(r);
             if (this.cc.chacha) {
                 const s = pe(this.swi, r);
                 return re(this.swk, s, e, W(i, [n], B(t), B(e.length - 16)))
@@ -898,61 +901,110 @@ const {TlsClient} = (() => {
             return z(this.swk, W(this.swi, s), a, W(i, [n], B(t), B(a.length - 16)))
         }
         async e13h(e) {
-            const t = pe(this.chi, this.csn++), n = _(a, 3, 3, B(e.length + 16));
+            const t = pe(this.chi, this.fc()), n = _(a, 3, 3, B(e.length + 16));
             return this.cc.chacha ? ne(this.chk, t, e, n) : j(this.chk, t, e, n)
         }
         async d13h(e) {
-            const t = pe(this.shi, this.ssn++), n = _(a, 3, 3, B(e.length));
-            return this.cc.chacha ? re(this.shk, t, e, n) : z(this.shk, t, e, n)
+            const t = pe(this.shi, this.fs()), n = _(a, 3, 3, B(e.length)), r = this.cc.chacha ? re(this.shk, t, e, n) : await z(this.shk, t, e, n);
+            return de(r)
         }
-        async e13(e) {
-            const t = W(e, [a]), n = pe(this.cai, this.csn++), r = _(a, 3, 3, B(t.length + 16));
-            return this.cc.chacha ? ne(this.cak, n, t, r) : j(this.cak, n, t, r)
+        async e13(e, n = this.fc(), r = a) {
+            const t = W(e, [r]), i = pe(this.cai, n), s = _(a, 3, 3, B(t.length + 16));
+            return this.cc.chacha ? ne(this.cak, i, t, s) : j(this.cak, i, t, s)
         }
-        async d13(e) {
-            const t = pe(this.sai, this.ssn++), n = _(a, 3, 3, B(e.length)), r = this.cc.chacha ? await re(this.sak, t, e, n) : await z(this.sak, t, e, n);
-            return {data: r.slice(0, -1), type: r[r.length - 1]}
+        async d13(e, n = this.fs(), r = this.sak, i = this.sai) {
+            const s = pe(i, n), h = _(a, 3, 3, B(e.length)), c = this.cc.chacha ? re(r, s, e, h) : await z(r, s, e, h);
+            return de(c)
         }
-        async write(e) {
-            if (!this.hc) throw 0;
+        write(e) {
+            if (!this.hc || this.failed || this.closing) return Promise.reject(0);
+            const t = this.wq.then(() => this._write(e)), n = t.catch(e => {this.fail(); throw e});
+            return this.wq = n.catch(() => {}), n
+        }
+        async _write(e) {
+            if (this.failed || this.closing) throw 0;
             const t = this.sk.writable.getWriter();
             try {
                 if (e.length <= 16384) {
                     await t.write(ie(a, this.is13 ? await this.e13(e) : await this.e12(e, a)));
                 } else {
-                    const m = [];
-                    for (let o = 0; o < e.length; o += 16384) {
-                        const c = e.subarray(o, Math.min(o + 16384, e.length)), s = this.csn++;
-                        m.push(this.is13 ? this.e13(c, s).then(r => ie(a, r)) : this.e12(c, a, s).then(r => ie(a, r)));
+                    for (let n = 0; n < e.length;) {
+                        const r = [];
+                        for (let i = 0; i < 8 && n < e.length; i++, n += 16384) {
+                            const i = e.subarray(n, Math.min(n + 16384, e.length)), s = this.fc();
+                            r.push(this.is13 ? this.e13(i, s).then(e => ie(a, e)) : this.e12(i, a, s).then(e => ie(a, e)))
+                        }
+                        await t.write(W(...await Promise.all(r)))
                     }
-                    const r = await Promise.all(m);
-                    let l = 0;
-                    for (let i = 0; i < r.length; i++) l += r[i].length;
-                    const u = new Uint8Array(l);
-                    for (let i = 0, p = 0; i < r.length; i++) {
-                        u.set(r[i], p);
-                        p += r[i].length;
-                    }
-                    await t.write(u);
                 }
             } finally {t.releaseLock();}
         }
-        async read() {
+        read() {
+            if (this.failed) return Promise.reject(0);
+            const e = this.rq.then(() => this._read()), t = e.catch(e => {this.fail(); throw e});
+            return this.rq = t.catch(() => {}), t
+        }
+        async _read() {
             for (; ;) {
-                let e;
-                for (; e = this.rp.next();) {
-                    if (e.type === i) {
-                        if (e.fragment[1] === E) return null;
-                        throw 0
-                    }
-                    if (e.type !== a) continue;
-                    if (!this.is13) return this.d12(e.fragment, a);
-                    const {data: t, type: n} = await this.d13(e.fragment);
-                    if (n === a) return t;
-                    if (n !== s) continue;
-                    let r;
-                    for (this.hp.feed(t); r = this.hp.next();) if (r.type !== o && r.type === k) throw 0
+                if (this.pq.length) return this.pq.shift();
+                if (this.closed) return null;
+                const e = [];
+                let n;
+                for (; e.length < 8 && (n = this.rr.length ? this.rr.shift() : this.rp.next());) {
+                    if (this.is13) {
+                        if (n.type === r) continue;
+                        if (n.type !== a) throw 0
+                    } else if (n.type !== a && n.type !== i && n.type !== s) throw 0;
+                    e.push(n)
                 }
+                if (e.length) {
+                    if (!this.is13) {
+                        const t = this.ssn;
+                        if (t + BigInt(e.length - 1) > ge) throw 0;
+                        const n = await Promise.all(e.map((e, n) => this.d12(e.fragment, e.type, t + BigInt(n))));
+                        this.ssn = t + BigInt(e.length);
+                        for (let t = 0; t < n.length; t++) this.pt(n[t], e[t].type)
+                    } else {
+                        const t = this.ssn, n = this.sak, r = this.sai;
+                        if (t + BigInt(e.length - 1) > ge) throw 0;
+                        let i;
+                        try {
+                            i = await Promise.all(e.map((e, i) => this.d13(e.fragment, t + BigInt(i), n, r)));
+                        } catch {
+                            i = null
+                        }
+                        if (i) {
+                            for (let n = 0; n < i.length; n++) {
+                                this.ssn = t + BigInt(n + 1);
+                                const r = await this.p13(i[n]);
+                                if (null !== r) {
+                                    n + 1 < e.length && this.rr.unshift(...e.slice(n + 1));
+                                    const t = 1 === r ? this.qku() : null;
+                                    await this.usr();
+                                    t && await t;
+                                    break
+                                }
+                            }
+                        } else {
+                            for (let n = 0; n < e.length; n++) {
+                                const r = await this.d13(e[n].fragment, this.ssn);
+                                this.ssn++;
+                                const i = await this.p13(r);
+                                if (null !== i) {
+                                    n + 1 < e.length && this.rr.unshift(...e.slice(n + 1));
+                                    const t = 1 === i ? this.qku() : null;
+                                    await this.usr();
+                                    t && await t;
+                                    break
+                                }
+                            }
+                        }
+                    }
+                    if (this.pq.length) return this.pq.shift();
+                    if (this.closed) return null;
+                    continue
+                }
+                if (this.closed) return null;
                 const t = this.sk.readable.getReader({mode: "byob"});
                 try {
                     const {value: e, done: n} = await this.rc(t, this.rb);
@@ -967,7 +1019,65 @@ const {TlsClient} = (() => {
                 } finally {t.releaseLock()}
             }
         }
-        close() {this.sk.close()}
+        pt(e, t) {
+            if (t === a) this.pq.push(e); else if (t === i) this.pa(e); else if (t === s) {
+                let t;
+                for (this.hp.feed(e); t = this.hp.next();) if (t.type === k) throw 0
+            }
+        }
+        pa(e) {
+            if (2 !== e.length) throw 0;
+            if (e[1] !== E) throw 0;
+            this.closed = !0, this.close()
+        }
+        async p13({data: e, type: t}) {
+            if (t === a) return this.pq.push(e), null;
+            if (t === i) return this.pa(e), null;
+            if (t !== s) throw 0;
+            let n, r = null;
+            for (this.hp.feed(e); n = this.hp.next();) {
+                if (n.type === o) continue;
+                if (n.type === k) {
+                    if (1 !== n.body.length || n.body[0] > 1 || null !== r) throw 0;
+                    r = n.body[0]
+                }
+            }
+            return r
+        }
+        async usr() {
+            const e = this.cc.hash, t = q(e);
+            this.sats = await O(e, this.sats, "traffic upd", P, t), [this.sak, this.sai] = await we(e, this.sats, this.cc.keyLen, this.cc.ivLen), this.ssn = 0n
+        }
+        qku() {
+            const e = this.wq.then(() => this.sku()), t = e.catch(e => {this.fail(); throw e});
+            return this.wq = t.catch(() => {}), t
+        }
+        async sku() {
+            if (this.failed || this.closing) throw 0;
+            const e = this.sk.writable.getWriter();
+            try {
+                const t = se(k, _(0));
+                await e.write(ie(a, await this.e13(t, this.fc(), s)))
+            } finally {e.releaseLock()}
+            const t = this.cc.hash, n = q(t);
+            this.cats = await O(t, this.cats, "traffic upd", P, n), [this.cak, this.cai] = await we(t, this.cats, this.cc.keyLen, this.cc.ivLen), this.csn = 0n
+        }
+        close() {
+            if (this.cp) return this.cp;
+            if (this.failed || !this.hc) {
+                try {this.sk.close()} catch {}
+                return this.cp = Promise.resolve()
+            }
+            this.closing = !0;
+            const e = this.wq.then(async () => {
+                const e = this.sk.writable.getWriter();
+                try {
+                    const t = _(1, E), n = this.is13 ? await this.e13(t, this.fc(), i) : await this.e12(t, i);
+                    await e.write(ie(this.is13 ? a : i, n))
+                } finally {e.releaseLock()}
+            });
+            return this.cp = e.catch(() => {}).finally(() => {this.closed = !0; try {this.sk.close()} catch {}}), this.wq = this.cp, this.cp
+        }
     }
     return {TlsClient};
 })();
