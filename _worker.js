@@ -25,7 +25,7 @@ const maxChunkLen = 64 * 1024;        // 64KB
 const flushTime = 4;                 // 4ms
 // ---------------------------------------------------------------------------------
 /** SS AEAD加密时每批并发处理的payload分片数量，length加密开销低，会随payload一起提交。*/
-const ssAeadEncryptCount = 4;
+const ssAeadEncryptCount = 16;
 // ---------------------------------------------------------------------------------
 /**- **警告**: worker最大支持6，超过6没意义*/
 let concurrency = 4;//socket获取并发数
@@ -916,7 +916,26 @@ const {TlsClient} = (() => {
         async write(e) {
             if (!this.hc) throw 0;
             const t = this.sk.writable.getWriter();
-            try {this.is13 ? await t.write(ie(a, await this.e13(e))) : await t.write(ie(a, await this.e12(e, a)))} finally {t.releaseLock()}
+            try {
+                if (e.length <= 16384) {
+                    await t.write(ie(a, this.is13 ? await this.e13(e) : await this.e12(e, a)));
+                } else {
+                    const m = [];
+                    for (let o = 0; o < e.length; o += 16384) {
+                        const c = e.subarray(o, Math.min(o + 16384, e.length)), s = this.csn++;
+                        m.push(this.is13 ? this.e13(c, s).then(r => ie(a, r)) : this.e12(c, a, s).then(r => ie(a, r)));
+                    }
+                    const r = await Promise.all(m);
+                    let l = 0;
+                    for (let i = 0; i < r.length; i++) l += r[i].length;
+                    const u = new Uint8Array(l);
+                    for (let i = 0, p = 0; i < r.length; i++) {
+                        u.set(r[i], p);
+                        p += r[i].length;
+                    }
+                    await t.write(u);
+                }
+            } finally {t.releaseLock();}
         }
         async read() {
             for (; ;) {
