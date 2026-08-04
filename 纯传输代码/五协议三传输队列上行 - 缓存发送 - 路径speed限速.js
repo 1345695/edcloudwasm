@@ -643,14 +643,14 @@ const {TlsClient} = (() => {
         return n
     }, we = (e, t, n, r) => Promise.all([O(e, t, "key", P, n), O(e, t, "iv", P, r)]);
     class TlsClient {
-        constructor(e, t = {}) {this.sk = e, this.sn = t.serverName || "", this.s13 = !1 !== t.tls13, this.s12 = !1 !== t.tls12, this.alpn = Array.isArray(t.alpn) ? t.alpn : t.alpn ? [t.alpn] : null, this.to = t.timeout ?? 3e4, this.cr = D(32), this.sr = null, this.hk = [], this.hc = !1, this.na = null, this.cs = null, this.cc = null, this.is13 = !1, this.ms = null, this.hs = null, this.cwk = null, this.swk = null, this.cwi = null, this.swi = null, this.chk = null, this.shk = null, this.chi = null, this.shi = null, this.cak = null, this.sak = null, this.cai = null, this.sai = null, this.csn = 0n, this.ssn = 0n, this.rp = new ae, this.hp = new he, this.kps = new Map, this.ekp = null, this.sc = !1}
+        constructor(e, t = {}) {this.sk = e, this.sn = t.serverName || "", this.s13 = !1 !== t.tls13, this.s12 = !1 !== t.tls12, this.alpn = Array.isArray(t.alpn) ? t.alpn : t.alpn ? [t.alpn] : null, this.to = t.timeout ?? 3e4, this.cr = D(32), this.sr = null, this.hk = [], this.hc = !1, this.na = null, this.cs = null, this.cc = null, this.is13 = !1, this.ms = null, this.hs = null, this.cwk = null, this.swk = null, this.cwi = null, this.swi = null, this.chk = null, this.shk = null, this.chi = null, this.shi = null, this.cak = null, this.sak = null, this.cai = null, this.sai = null, this.csn = 0n, this.ssn = 0n, this.rp = new ae, this.hp = new he, this.kps = new Map, this.ekp = null, this.sc = !1, this.rb = new Uint8Array(65536)}
         rh(e) {this.hk.push(e)}
         ts() {return 1 === this.hk.length ? this.hk[0] : W(...this.hk)}
         gfc(e) {return U.get(e) || null}
-        async rc(e) {
-            if (!this.to) return e.read();
+        async rc(e, b) {
+            if (!this.to) return b ? e.read(b) : e.read();
             let t;
-            const n = e.read(), r = await Promise.race([n, new Promise(e => t = setTimeout(e, this.to, 0))]).finally(() => clearTimeout(t));
+            const n = b ? e.read(b) : e.read(), r = await Promise.race([n, new Promise(e => t = setTimeout(e, this.to, 0))]).finally(() => clearTimeout(t));
             if (r) return r;
             try {await e.cancel("err")} catch {}
             try {await n} catch {}
@@ -899,11 +899,17 @@ const {TlsClient} = (() => {
                     let r;
                     for (this.hp.feed(t); r = this.hp.next();) if (r.type !== o && r.type === k) throw 0
                 }
-                const t = this.sk.readable.getReader();
+                const t = this.sk.readable.getReader({mode: "byob"});
                 try {
-                    const {value: e, done: n} = await this.rc(t);
+                    const {value: e, done: n} = await this.rc(t, this.rb);
                     if (n) return null;
-                    this.rp.feed(e)
+                    if (e.length > 49152) {
+                        this.rp.feed(e.subarray());
+                        this.rb = new Uint8Array(65536);
+                    } else {
+                        this.rp.feed(e.slice());
+                        this.rb = new Uint8Array(e.buffer);
+                    }
                 } finally {t.releaseLock()}
             }
         }
