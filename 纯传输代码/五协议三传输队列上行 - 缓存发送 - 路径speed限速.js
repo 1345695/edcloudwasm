@@ -13,6 +13,7 @@
  * https/ghttps/httpsall      - 直连失败HTTPS代理 / 全局HTTPS          示例: https=user1:pass1@host1:port1,user2:pass2@host2:port2
  * nat64/gnat64/nat64all      - 直连失败NAT64转换 / 全局NAT64          示例: nat64=64:ff9b::,64:ff9b:1::
  * turn/gturn/turnall         - 直连失败TURN代理 / 全局TURN            示例: turn=user1:pass1@host1:port1,user2:pass2@host2:port2
+ * turns/gturns/turnsall      - 直连失败TURNS代理 / 全局TURNS          示例: turns=user1:pass1@host1:port1,user2:pass2@host2:port2
  * ip/txtip/proxyip           - 直连失败时的备用IP                     示例: ip=1.2.3.4:443,5.6.7.8:443
  * proxyall/globalproxy       - 全局代理标志,无s5/http/https参数时纯直连 示例: proxyall=1
  * speed                      - 下行限速,单位默认MB/s，大于256时解除限速  示例: speed=50 表示50MB/s
@@ -58,7 +59,7 @@ const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
 // ---------------------------------------------------------------------------------
 //五者的socket获取顺序，全局模式下为这五个的顺序，非全局为：直连>socks>http>https>turn>nat64>proxyip>finallyProxyHost
 /**- **警告**: snippets只支持最大两次connect，所以snippets全局nat64不能使用域名访问，snippets访问cf失败的备用只有第一个有效*/
-const proxyStrategyOrder = ['socks', 'http', 'https', 'turn', 'nat64'];
+const proxyStrategyOrder = ['socks', 'http', 'https', 'turn', 'turns', 'nat64'];
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
 const proxyIpAddrs = {EU: 'ProxyIP.DE.CMLiussss.net', AS: 'ProxyIP.SG.CMLiussss.net', JP: 'ProxyIP.JP.CMLiussss.net', US: 'ProxyIP.US.CMLiussss.net'};//分区域proxyip
@@ -968,10 +969,11 @@ const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addr
                                             leftOver = leftOver.subarray(len);
                                             return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
                                         }
-                                        const data = await tlsClient.read();
-                                        if (!data) return {done: true};
-                                        const len = Math.min(data.length, view.byteLength);
-                                        view.set(data.subarray(0, len));
+                                        const tlsData = await tlsClient.read();
+                                        if (!tlsData) return {done: true};
+                                        const len = Math.min(tlsData.length, view.byteLength);
+                                        view.set(tlsData.subarray(0, len));
+                                        if (tlsData.length > len) leftOver = tlsData.subarray(len);
                                         return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
                                     },
                                     releaseLock() {}
@@ -1082,12 +1084,43 @@ const readStun = async (rd, buf) => {
     } catch {return null}
 };
 const md5 = async s => new Uint8Array(await crypto.subtle.digest('MD5', textEncoder.encode(s)));
-const connectViaTurnProxy = async ({hostname, port, username, password}, targetIp, targetPort) => {
-    let ctrl = null, data = null, dataPromise = null;
-    const close = () => [ctrl, data].forEach(s => {try {s?.close()} catch {}});
+const connectViaTurnProxy = async ({hostname, port, username, password}, targetIp, targetPort, useTls = false) => {
+    let ctrl = null, data = null, dataPromise = null, ctrlTls = null, dataTls = null;
+    const proxyIsIp = addrTypeIs(hostname) !== 3;
+    const close = () => [ctrl, data, ctrlTls, dataTls].forEach(s => {try {s?.close()} catch {}});
+    const createConn = async () => {
+        let sock, tls = null, isCustom = false;
+        if (useTls && proxyIsIp) {
+            isCustom = true;
+            sock = await createConnect(hostname, port, {allowHalfOpen: false});
+        } else {
+            try {
+                sock = await createConnect(hostname, port, useTls ? {secureTransport: 'on', allowHalfOpen: false} : undefined);
+            } catch {
+                if (!useTls) throw 0;
+                isCustom = true;
+                sock = await createConnect(hostname, port, {allowHalfOpen: false});
+            }
+        }
+        if (isCustom) {
+            tls = new TlsClient(sock, {serverName: proxyIsIp ? "" : hostname});
+            await tls.handshake();
+        }
+        return {sock, tls, isCustom};
+    };
     try {
-        ctrl = await createConnect(hostname, port);
-        const cw = ctrl.writable.getWriter(), cr = ctrl.readable.getReader();
+        const cRes = await createConn();
+        ctrl = cRes.sock;
+        ctrlTls = cRes.tls;
+        const cIsCustom = cRes.isCustom;
+        const cw = cIsCustom ? {write: c => ctrlTls.write(c), releaseLock: () => {}} : ctrl.writable.getWriter();
+        const cr = cIsCustom ? {
+            read: async () => {
+                const v = await ctrlTls.read();
+                return v ? {value: v, done: false} : {done: true};
+            },
+            releaseLock: () => {}
+        } : ctrl.readable.getReader();
         const tidBuf = new Uint8Array(12), tid = () => crypto.getRandomValues(tidBuf), tp = new Uint8Array([6, 0, 0, 0]);
         await cw.write(stunMsg(0x003, tid(), [stunAttr(0x019, tp)]));
         let [r, ex] = await readStun(cr);
@@ -1106,7 +1139,7 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, targetI
                 sign(stunMsg(0x00A, tid(), [peer, ...aa]))
             ]);
             await cw.write(cat(am, pm, cm));
-            dataPromise = createConnect(hostname, port);
+            dataPromise = createConn();
             [r, ex] = await readStun(cr, ex);
             if (r?.type !== 0x103) throw 0;
         } else if (r.type === 0x103) {
@@ -1115,20 +1148,58 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, targetI
                 sign(stunMsg(0x00A, tid(), [peer, ...aa]))
             ]);
             await cw.write(cat(pm, cm));
-            dataPromise = createConnect(hostname, port);
+            dataPromise = createConn();
         } else {throw 0}
         [r, ex] = await readStun(cr, ex);
         if (r?.type !== 0x108) throw 0;
         [r] = await readStun(cr, ex);
         if (r?.type !== 0x10A || !r.attrs[0x02A]) throw 0;
-        data = await dataPromise;
-        const dw = data.writable.getWriter(), dr = data.readable.getReader();
+        const dRes = await dataPromise;
+        data = dRes.sock;
+        dataTls = dRes.tls;
+        const dIsCustom = dRes.isCustom;
+        const dw = dIsCustom ? {write: c => dataTls.write(c), releaseLock: () => {}} : data.writable.getWriter();
+        const dr = dIsCustom ? {
+            read: async () => {
+                const v = await dataTls.read();
+                return v ? {value: v, done: false} : {done: true};
+            },
+            releaseLock: () => {}
+        } : data.readable.getReader();
         await dw.write(await sign(stunMsg(0x00B, tid(), [stunAttr(0x02A, r.attrs[0x02A]), ...aa])));
         let extra;
         [r, extra] = await readStun(dr);
         if (r?.type !== 0x10B) throw 0;
-        cr.releaseLock(), cw.releaseLock(), dw.releaseLock(), dr.releaseLock();
-        return {readable: data.readable, writable: data.writable, close, extra};
+        if (!cIsCustom) cr.releaseLock(), cw.releaseLock();
+        if (!dIsCustom) dr.releaseLock(), dw.releaseLock();
+        const readable = dIsCustom ? {
+            getReader() {
+                let leftOver = new Uint8Array(0);
+                return {
+                    async read(view) {
+                        if (leftOver.length) {
+                            const len = Math.min(leftOver.length, view.byteLength);
+                            view.set(leftOver.subarray(0, len));
+                            leftOver = leftOver.subarray(len);
+                            return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
+                        }
+                        const tlsData = await dataTls.read();
+                        if (!tlsData) return {done: true};
+                        const len = Math.min(tlsData.length, view.byteLength);
+                        view.set(tlsData.subarray(0, len));
+                        if (tlsData.length > len) leftOver = tlsData.subarray(len);
+                        return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
+                    },
+                    releaseLock() {}
+                };
+            }
+        } : data.readable;
+        const writable = dIsCustom ? new WritableStream({
+            write(c) {return dataTls.write(c)},
+            close() {dataTls.close()},
+            abort() {dataTls.close()}
+        }) : data.writable;
+        return {readable, writable, close, extra};
     } catch {
         close();
         return null;
@@ -1439,28 +1510,27 @@ const connectProxyIp = async (param, limit, txt) => {
     return concurrentConnect(host, port, limit);
 };
 const strategyExecutorMap = new Map([
-    [0, async ({addrType, port, addrBytes}) => {
+    [0, async ({addrType, port, addrBytes}, _param, _limit, _txt) => {
         const hostname = binaryAddrToString(addrType, addrBytes);
         return concurrentConnect(hostname, port);
     }],
-    [1, async ({addrType, port, addrBytes}, param, limit) => {
+    [1, async ({addrType, port, addrBytes}, param, limit, _txt) => {
         return connectViaSocksProxy(addrType, port, param, addrBytes, limit);
     }],
-    [2, async ({addrType, port, addrBytes}, param, limit) => {
+    [2, async ({addrType, port, addrBytes}, param, limit, _txt) => {
         return connectViaHttpProxy(addrType, port, param, addrBytes, limit);
     }],
-    [6, async ({addrType, port, addrBytes}, param, limit) => {
+    [6, async ({addrType, port, addrBytes}, param, limit, _txt) => {
         return connectViaHttpProxy(addrType, port, param, addrBytes, limit, true);
     }],
     [3, async (_parsedRequest, param, limit, txt) => {
         return connectProxyIp(param, limit, txt);
     }],
-    [4, async ({addrType, port, addrBytes, isHttp}, param, limit) => {
+    [4, async ({addrType, port, addrBytes, isHttp}, param, limit, _txt) => {
         const {nat64Auth, proxyAll} = param;
         return connectNat64(addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp);
     }],
-    // @ts-ignore
-    [5, async ({addrType, port, addrBytes, isHttp}, param) => {
+    [5, async ({addrType, port, addrBytes, isHttp}, param, _limit, _txt) => {
         let targetIp = binaryAddrToString(addrType, addrBytes);
         if (isHttp) addrType = addrTypeIs(targetIp);
         if (addrType === 3) {
@@ -1470,9 +1540,20 @@ const strategyExecutorMap = new Map([
             targetIp = aRecord.data;
         } else if (addrType === 4) {return null}
         return connectViaTurnProxy(param, targetIp, port);
+    }],
+    [7, async ({addrType, port, addrBytes, isHttp}, param, _limit, _txt) => {
+        let targetIp = binaryAddrToString(addrType, addrBytes);
+        if (isHttp) addrType = addrTypeIs(targetIp);
+        if (addrType === 3) {
+            const answer = await concurrentDnsResolve(targetIp, 'A');
+            const aRecord = answer?.find(record => record.type === 1);
+            if (!aRecord) return null;
+            targetIp = aRecord.data;
+        } else if (addrType === 4) {return null}
+        return connectViaTurnProxy(param, targetIp, port, true);
     }]
 ]);
-const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|s5|socks|http|https|nat64|turn|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
+const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|gturns|turnsall|s5|socks|http|https|nat64|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
 const establishTcpConnection = async (parsedRequest, request) => {
@@ -1495,8 +1576,8 @@ const establishTcpConnection = async (parsedRequest, request) => {
             let m;
             while ((m = paramRegex.exec(clean))) {p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true}
             if (p.speed) speed = p.speed;
-            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https, nat64 = p.gnat64 || p.nat64all || p.nat64, turn = p.gturn || p.turnall || p.turn;
-            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.gnat64 || p.nat64all || p.gturn || p.turnall || p.proxyall || p.globalproxy);
+            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https, nat64 = p.gnat64 || p.nat64all || p.nat64, turn = p.gturn || p.turnall || p.turn, turns = p.gturns || p.turnsall || p.turns;
+            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.gnat64 || p.nat64all || p.gturn || p.turnall || p.gturns || p.turnsall || p.proxyall || p.globalproxy);
             if (!proxyAll) list.push({type: 0});
             const add = (v, t, txt) => {
                 if (!v) return;
@@ -1506,7 +1587,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
                 } else if (parts.length) {
                     const parsedParams = parts.map(part => {
                         if (t === 4) return {nat64Auth: part, proxyAll};
-                        if (t === 1 || t === 2 || t === 5 || t === 6) return parseAuthString(part);
+                        if (t === 1 || t === 2 || t === 5 || t === 6 || t === 7) return parseAuthString(part);
                         return part;
                     });
                     list.push({type: t, param: parsedParams, concurrent: true});
@@ -1514,7 +1595,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
             };
             for (let i = 0; i < proxyStrategyOrder.length; i++) {
                 const k = proxyStrategyOrder[i];
-                add(k === 'socks' ? s5 : k === 'http' ? http : k === 'https' ? https : k === 'turn' ? turn : nat64, k === 'socks' ? 1 : k === 'http' ? 2 : k === 'https' ? 6 : k === 'turn' ? 5 : 4);
+                add(k === 'socks' ? s5 : k === 'http' ? http : k === 'https' ? https : k === 'turn' ? turn : k === 'turns' ? turns : nat64, k === 'socks' ? 1 : k === 'http' ? 2 : k === 'https' ? 6 : k === 'turn' ? 5 : k === 'turns' ? 7 : 4);
             }
             if (proxyAll) {
                 if (!list.length) list.push({type: 0});
