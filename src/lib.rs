@@ -1052,6 +1052,11 @@ pub unsafe extern "C" fn parseUrlWasm(url_len: i32) {
             i += 11;
             continue;
         }
+        if starts_with_ignore_case(rem_data, b"global") {
+            is_all = true;
+            i += 6;
+            continue;
+        }
         
         let mut matched = false;
         // [循环] 参数匹配

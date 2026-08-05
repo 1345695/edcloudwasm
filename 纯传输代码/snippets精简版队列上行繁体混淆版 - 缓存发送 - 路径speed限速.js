@@ -396,7 +396,7 @@ const 策映 = new Map([
 ]);
 const 網典 = new Map(), 網鍵 = new Array(網限);
 let 網序 = 0;
-const 參正 = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gturn|turnall|gturns|turnsall|s5|socks|http|https|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
+const 參正 = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gturn|turnall|gturns|turnsall|s5|socks|http|https|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
 const 建傳連 = async (解請, 請) => {
     let 網串 = 請.url, 淨徑 = 網串.slice(網串.indexOf('/', 10) + 1), 徑長 = 淨徑.length, 策列 = [], 速;
     if (徑長 > 3 && 淨徑.charCodeAt(徑長 - 4) === 47 && 淨徑.charCodeAt(徑長 - 3) === 84 && 淨徑.charCodeAt(徑長 - 2) === 117 && 淨徑.charCodeAt(徑長 - 1) === 110) {
@@ -415,7 +415,7 @@ const 建傳連 = async (解請, 請) => {
             while ((匹項 = 參正.exec(淨徑))) 暫指[(匹項[1] || 匹項[3]).toLowerCase()] = 匹項[2] ? (匹項[2].charCodeAt(匹項[2].length - 1) === 61 ? 匹項[2].slice(0, -1) : 匹項[2]) : true;
             if (暫指.speed) 速 = 暫指.speed;
             const 通設 = 暫指.gs5 || 暫指.s5all || 暫指.s5 || 暫指.socks, 超設 = 暫指.ghttp || 暫指.httpall || 暫指.http, 安超設 = 暫指.ghttps || 暫指.httpsall || 暫指.https, 中設 = 暫指.gturn || 暫指.turnall || 暫指.turn, 安中設 = 暫指.gturns || 暫指.turnsall || 暫指.turns;
-            const 全代 = !!(暫指.gs5 || 暫指.s5all || 暫指.ghttp || 暫指.httpall || 暫指.ghttps || 暫指.httpsall || 暫指.gturn || 暫指.turnall || 暫指.gturns || 暫指.turnsall || 暫指.proxyall || 暫指.globalproxy);
+            const 全代 = !!(暫指.gs5 || 暫指.s5all || 暫指.ghttp || 暫指.httpall || 暫指.ghttps || 暫指.httpsall || 暫指.gturn || 暫指.turnall || 暫指.gturns || 暫指.turnsall || 暫指.proxyall || 暫指.globalproxy || 暫指.global);
             if (!全代) 策列.push({型: 0});
             const 加策 = (暫值, 型值, 文記) => {
                 if (!暫值) return;

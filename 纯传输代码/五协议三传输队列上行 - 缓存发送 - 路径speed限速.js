@@ -15,7 +15,7 @@
  * turn/gturn/turnall         - 直连失败TURN代理 / 全局TURN            示例: turn=user1:pass1@host1:port1,user2:pass2@host2:port2
  * turns/gturns/turnsall      - 直连失败TURNS代理 / 全局TURNS          示例: turns=user1:pass1@host1:port1,user2:pass2@host2:port2
  * ip/txtip/proxyip           - 直连失败时的备用IP                     示例: ip=1.2.3.4:443,5.6.7.8:443
- * proxyall/globalproxy       - 全局代理标志,无s5/http/https参数时纯直连 示例: proxyall=1
+ * proxyall/globalproxy/global - 全局代理标志,无s5/http/https参数时纯直连 示例: proxyall=1
  * speed                      - 下行限速,单位默认MB/s，大于256时解除限速  示例: speed=50 表示50MB/s
  * ==========================================================================================================================*/
 import {connect} from 'cloudflare:sockets';
@@ -82,7 +82,7 @@ for (const [region, colos] of Object.entries(coloRegions)) {for (const colo of c
 const uuidBytes = new Uint8Array(16), hashBytes = new Uint8Array(56), offsets = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4];
 for (let i = 0, c; i < 16; i++) uuidBytes[i] = (((c = uuid.charCodeAt(i * 2 + offsets[i])) > 64 ? c + 9 : c) & 0xF) << 4 | (((c = uuid.charCodeAt(i * 2 + offsets[i] + 1)) > 64 ? c + 9 : c) & 0xF);
 for (let i = 0; i < 56; i++) hashBytes[i] = passWordSha224.charCodeAt(i);
-const [textEncoder, textDecoder, socks5Init, socks5req] = [new TextEncoder(), new TextDecoder(), new Uint8Array([5, 2, 0, 2]), new Uint8Array([5, 0, 0, 1, 0, 0, 0, 0, 0, 0])];
+const [textEncoder, textDecoder, socks5req] = [new TextEncoder(), new TextDecoder(), new Uint8Array([5, 0, 0, 1, 0, 0, 0, 0, 0, 0])];
 let socks5Pkg, httpAuthValue;
 const httpRes200 = textEncoder.encode("HTTP/1.1 200 Connection Established\r\n\r\n"), httpRes407 = textEncoder.encode("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\n\r\n");
 if (socks5AndHttpUser && socks5AndHttpPass) {
@@ -192,19 +192,9 @@ const ssAeadDecryptFeed = async (ctx, chunk, onPlain) => {
         pendingStart += ctx.nextNeed;
         ctx.nextPayloadLen = -1;
         ctx.nextNeed = 0;
-        if (onPlain) {
-            await onPlain(payload);
-        } else {
-            out.push(payload), total += payload.length;
-        }
+        onPlain ? await onPlain(payload) : (out.push(payload), total += payload.length);
     }
-    if (pendingStart === pendingEnd) {
-        ctx.pendingStart = 0;
-        ctx.pendingEnd = 0;
-    } else {
-        ctx.pendingStart = pendingStart;
-        ctx.pendingEnd = pendingEnd;
-    }
+    pendingStart === pendingEnd ? (ctx.pendingStart = 0, ctx.pendingEnd = 0) : (ctx.pendingStart = pendingStart, ctx.pendingEnd = pendingEnd);
     if (onPlain || out.length === 0) return emptyU8;
     if (out.length === 1) return out[0];
     const merged = new Uint8Array(total);
@@ -298,6 +288,10 @@ const isIPv4 = (str) => {
     }
     return dots === 3 && partLen > 0 && !(partLen > 1 && head === 48);
 };
+const addrTypeIs = (hostname) => {
+    const char0 = hostname.charCodeAt(0);
+    return (char0 - 48) >>> 0 > 9 ? (char0 === 91 ? 4 : 3) : isIPv4(hostname) ? 1 : 3;
+};
 const createConnect = (hostname, port, socketOptions, socket = connect({hostname, port}, socketOptions)) => socket.opened.then(() => socket);
 const concurrentConnect = (hostname, port, limit = concurrency, socketOptions) => {
     if (limit === 1) return createConnect(hostname, port, socketOptions);
@@ -326,7 +320,7 @@ const connectViaSocksProxy = async (targetAddrType, targetPortNum, socksAuth, ad
     const socksSocket = await concurrentConnect(socksAuth.hostname, socksAuth.port, limit);
     const writer = socksSocket.writable.getWriter();
     const reader = socksSocket.readable.getReader();
-    await writer.write(socks5Init);
+    await writer.write(new Uint8Array([5, 2, 0, 2]));
     const {value: authResponse} = await reader.read();
     if (!authResponse || authResponse[0] !== 5 || authResponse[1] === 0xFF) return null;
     if (authResponse[1] === 2) {
@@ -499,7 +493,7 @@ const {TlsClient} = (() => {
         }
         return ""
     }, Z0 = e => e && 1 === e[0] && 112 === e[1];
-    function ue(e, n, r, {cookie: cookie = null, sessionId: sid = P, groups: supportedGroups = null} = {}) {
+    function ue(e, n, r, {cookie: ck = null, sessionId: id = P, groups: gs = null} = {}) {
         n = F0(n);
         const c = [4865, 4866, 49199, 49200, 49195, 49196];
         const o = _(...c.flatMap(B)), l = [_(255, 1, 0, 1, 0)];
@@ -508,14 +502,14 @@ const {TlsClient} = (() => {
             l.push(_(B(v), B(t.length + 2), B(t.length), t))
         }
         l.push(_(B(S), 0, 2, 1, 0));
-        const groups = supportedGroups?.filter(e => I.has(e)) || [];
-        if (!groups.length) r?.x25519 && groups.push(29), r?.p256 && groups.push(23), r instanceof Uint8Array && groups.push(23);
-        if (!groups.length) throw 0;
-        const groupBytes = _(...groups.flatMap(B));
-        l.push(_(B(A), B(groupBytes.length + 2), B(groupBytes.length), groupBytes));
+        const g = gs?.filter(e => I.has(e)) || [];
+        if (!g.length) r?.x25519 && g.push(29), r?.p256 && g.push(23), r instanceof Uint8Array && g.push(23);
+        if (!g.length) throw 0;
+        const gb = _(...g.flatMap(B));
+        l.push(_(B(A), B(gb.length + 2), B(gb.length), gb));
         const f = _(...x.flatMap(B));
         l.push(_(B(m), B(f.length + 2), B(f.length), f));
-        cookie?.length && l.push(_(B(44), B(cookie.length), cookie));
+        ck?.length && l.push(_(B(44), B(ck.length), ck));
         if (r) {
             let e;
             if (l.push(_(B(C), 0, 5, 4, 3, 4, 3, 3)), l.push(_(B(H), 0, 2, 1, 1)), r?.x25519 && r?.p256) {e = W(_(0, 29, B(r.x25519.length), r.x25519), _(0, 23, B(r.p256.length), r.p256))} else if (r?.x25519) {e = _(0, 29, B(r.x25519.length), r.x25519)} else if (r?.p256) {e = _(0, 23, B(r.p256.length), r.p256)} else {
@@ -525,7 +519,7 @@ const {TlsClient} = (() => {
             l.push(_(B(T), B(e.length + 2), B(e.length), e))
         }
         const y = W(...l);
-        return se(h, _(B(t), e, sid.length, sid, B(o.length), o, 1, 0, B(y.length), y))
+        return se(h, _(B(t), e, id.length, id, B(o.length), o, 1, 0, B(y.length), y))
     }
     const ye = e => {
         const t = new Uint8Array(8);
@@ -544,13 +538,22 @@ const {TlsClient} = (() => {
         return {data: e.slice(0, t), type: e[t]}
     }, ge = 0xffffffffffffffffn;
     class TlsClient {
-        constructor(e, t = {}) {this.sk = e, this.sn = t.serverName || "", this.cr = D(32), this.sid = D(32), this.sr = null, this.hk = [], this.hc = !1, this.cs = null, this.cc = null, this.is13 = !1, this.ms = null, this.hs = null, this.cwk = null, this.swk = null, this.cwi = null, this.swi = null, this.chk = null, this.shk = null, this.chi = null, this.shi = null, this.cak = null, this.sak = null, this.cai = null, this.sai = null, this.cats = null, this.sats = null, this.csn = 0n, this.ssn = 0n, this.rp = new ae, this.hp = new he, this.kps = new Map, this.ekp = null, this.pq = [], this.rr = [], this.closed = !1, this.closing = !1, this.failed = !1, this.wq = Promise.resolve(), this.cp = null, this.rb = new Uint8Array(65536)}
-        rh(e) {this.hk.push(e)}
-        ts() {return 1 === this.hk.length ? this.hk[0] : W(...this.hk)}
+        constructor(e, t = {}) {this.sk = e, this.sn = t.serverName || "", this.cr = D(32), this.id = D(32), this.sr = null, this.ht = [], this.hc = !1, this.cs = null, this.cc = null, this.i3 = !1, this.ms = null, this.hs = null, this.ck = null, this.wk = null, this.cv = null, this.wv = null, this.ch = null, this.sh = null, this.ci = null, this.si = null, this.ak = null, this.bk = null, this.ai = null, this.bi = null, this.at = null, this.bt = null, this.cn = 0n, this.qn = 0n, this.rp = new ae, this.hp = new he, this.kp = new Map, this.ep = null, this.pq = [], this.rr = [], this.cl = !1, this.cg = !1, this.fl = !1, this.wq = Promise.resolve(), this.cp = null, this.rb = new Uint8Array(65536)}
+        rh(e) {this.ht.push(e)}
+        ts() {return 1 === this.ht.length ? this.ht[0] : W(...this.ht)}
         gfc(e) {return U.get(e) || null}
-        fc() {if (this.csn > ge) throw 0; return this.csn++}
-        fs() {if (this.ssn > ge) throw 0; return this.ssn++}
-        fail() {this.failed = !0, this.closed = !0; try {this.sk.close()} catch {}}
+        fc() {
+            if (this.cn > ge) throw 0;
+            return this.cn++
+        }
+        fs() {
+            if (this.qn > ge) throw 0;
+            return this.qn++
+        }
+        fail() {
+            this.fl = !0, this.cl = !0;
+            try {this.sk.close()} catch {}
+        }
         async rc(e, b) {
             let t;
             const n = b ? e.read(b) : e.read(), r = await Promise.race([n, new Promise(e => t = setTimeout(e, 3e4, 0))]).finally(() => clearTimeout(t));
@@ -581,39 +584,36 @@ const {TlsClient} = (() => {
                 }
             }, n)
         }
-        clearHandshakeState() {
-            this.cr = this.sid = this.sr = this.hk = this.ms = this.hs = this.chk = this.shk = this.chi = this.shi = this.ekp = null;
-            this.kps?.clear(), this.kps = null
-        }
+        chs() {this.cr = this.id = this.sr = this.ht = this.ms = this.hs = this.ch = this.sh = this.ci = this.si = this.ep = null, this.kp?.clear(), this.kp = null}
         async handshake() {
             const [t, n] = await Promise.allSettled([F("P-256"), F("X25519")]);
-            this.kps = new Map, "fulfilled" === t.status && this.kps.set(23, t.value), "fulfilled" === n.status && this.kps.set(29, n.value);
-            if (!this.kps.size) throw 0;
-            this.ekp = (this.kps.get(23) || this.kps.get(29)).kp;
+            this.kp = new Map, "fulfilled" === t.status && this.kp.set(23, t.value), "fulfilled" === n.status && this.kp.set(29, n.value);
+            if (!this.kp.size) throw 0;
+            this.ep = (this.kp.get(23) || this.kp.get(29)).kp;
             const r = this.sk.readable.getReader(), a = this.sk.writable.getWriter();
             try {
-                const shares = {x25519: this.kps.get(29)?.pk, p256: this.kps.get(23)?.pk};
-                const supportedGroups = [29, 23].filter(e => this.kps.has(e));
-                const h = ue(this.cr, this.sn, shares, {sessionId: this.sid, groups: supportedGroups});
+                const x = {x25519: this.kp.get(29)?.pk, p256: this.kp.get(23)?.pk};
+                const sg = [29, 23].filter(e => this.kp.has(e));
+                const h = ue(this.cr, this.sn, x, {sessionId: this.id, groups: sg});
                 this.rh(h), await a.write(ie(s, h, e));
                 let o = await this.rsh(r);
                 if (o.isHRR) {
-                    const group = o.ks?.group;
-                    if (!I.has(group)) throw 0;
-                    const kp = await F(I.get(group));
-                    this.kps.set(group, kp), this.ekp = kp.kp;
-                    const digest = await G(this.cc.hash, h);
-                    this.hk = [se(254, digest), this.hk[this.hk.length - 1]];
-                    const retryShares = 29 === group ? {x25519: kp.pk} : {p256: kp.pk};
-                    const retry = ue(this.cr, this.sn, retryShares, {cookie: o.cookie, sessionId: this.sid, groups: supportedGroups});
-                    this.rh(retry), await a.write(ie(s, retry, e)), o = await this.rsh(r);
+                    const gp = o.ks?.group;
+                    if (!I.has(gp)) throw 0;
+                    const kp = await F(I.get(gp));
+                    this.kp.set(gp, kp), this.ep = kp.kp;
+                    const dg = await G(this.cc.hash, h);
+                    this.ht = [se(254, dg), this.ht[this.ht.length - 1]];
+                    const rs = 29 === gp ? {x25519: kp.pk} : {p256: kp.pk};
+                    const ry = ue(this.cr, this.sn, rs, {cookie: o.cookie, sessionId: this.id, groups: sg});
+                    this.rh(ry), await a.write(ie(s, ry, e)), o = await this.rsh(r);
                     if (o.isHRR) throw 0
                 }
-                if (o.ks?.group && this.kps.has(o.ks.group)) {
-                    const e = this.kps.get(o.ks.group);
-                    this.ekp = e.kp
+                if (o.ks?.group && this.kp.has(o.ks.group)) {
+                    const e = this.kp.get(o.ks.group);
+                    this.ep = e.kp
                 }
-                o.isTls13 ? await this.h13(r, a, o) : await this.h12(r, a), this.hc = !0, this.clearHandshakeState()
+                o.isTls13 ? await this.h13(r, a, o) : await this.h12(r, a), this.hc = !0, this.chs()
             } finally {r.releaseLock(), a.releaseLock()}
         }
         async rsh(e) {
@@ -633,13 +633,13 @@ const {TlsClient} = (() => {
                         this.rh(e.raw);
                         const t = ce(e.body), n = this.gfc(t.cs);
                         if (!n || t.comp || t.isTls13 !== !!n.tls13 || !t.isTls13 && t.sv !== 771) throw 0;
-                        return this.sr = t.sr, this.cs = t.cs, this.cc = n, this.is13 = t.isTls13, t
+                        return this.sr = t.sr, this.cs = t.cs, this.cc = n, this.i3 = t.isTls13, t
                     }
                 }
             }
         }
         async h12(e, t) {
-            let n = null, a = !1, certRequested = !1;
+            let n = null, a = !1, rq = !1;
             if (await this.ph(e, async e => {
                 switch (e.type) {
                     case f: {
@@ -652,7 +652,7 @@ const {TlsClient} = (() => {
                     case p:
                         return this.rh(e.raw), a = !0, 1;
                     case y:
-                        this.rh(e.raw), certRequested = !0;
+                        this.rh(e.raw), rq = !0;
                         break;
                     default:
                         this.rh(e.raw)
@@ -661,18 +661,18 @@ const {TlsClient} = (() => {
             if (!n) throw 0;
             const h = I.get(n.nc);
             if (!h) throw 0;
-            const c = this.kps.get(n.nc);
+            const c = this.kp.get(n.nc);
             if (!c) throw 0;
-            if (certRequested) {
-                const emptyCert = se(f, _(0, 0, 0));
-                this.rh(emptyCert), await t.write(ie(s, emptyCert))
+            if (rq) {
+                const ec = se(f, _(0, 0, 0));
+                this.rh(ec), await t.write(ie(s, ec))
             }
             const o = await Y(c.kp.privateKey, n.spk, h), l = se(d, _(c.pk.length, c.pk));
             this.rh(l);
             const w = this.cc.hash;
             this.ms = await V(o, "master secret", W(this.cr, this.sr), 48, w);
             const k = this.cc.keyLen, v = this.cc.ivLen, A = await V(this.ms, "key expansion", W(this.sr, this.cr), 2 * k + 2 * v, w);
-            [this.cwk, this.swk] = await Promise.all([J(A.slice(0, k), "encrypt"), J(A.slice(k, 2 * k), "decrypt")]), this.cwi = A.slice(2 * k, 2 * k + v), this.swi = A.slice(2 * k + v, 2 * k + 2 * v), await t.write(ie(s, l)), await t.write(ie(r, _(1)));
+            [this.ck, this.wk] = await Promise.all([J(A.slice(0, k), "encrypt"), J(A.slice(k, 2 * k), "decrypt")]), this.cv = A.slice(2 * k, 2 * k + v), this.wv = A.slice(2 * k + v, 2 * k + 2 * v), await t.write(ie(s, l)), await t.write(ie(r, _(1)));
             const S = await V(this.ms, "client finished", await G(w, this.ts()), 12, w), m = se(g, S);
             this.rh(m), await t.write(ie(s, await this.e12(m, s)));
             let b = !1;
@@ -693,12 +693,12 @@ const {TlsClient} = (() => {
         async h13(e, t, n) {
             const h = I.get(n.ks?.group);
             if (!h || !n.ks?.key?.length) throw 0;
-            const c = this.cc.hash, o = q(c), u = this.cc.keyLen, p = this.cc.ivLen, d = await Y(this.ekp.privateKey, n.ks.key, h), k = await X(c, null, new Uint8Array(o)), v = await O(c, k, "derived", await G(c, P), o);
+            const c = this.cc.hash, o = q(c), u = this.cc.keyLen, p = this.cc.ivLen, d = await Y(this.ep.privateKey, n.ks.key, h), k = await X(c, null, new Uint8Array(o)), v = await O(c, k, "derived", await G(c, P), o);
             this.hs = await X(c, v, d);
             const A = await G(c, this.ts()), S = await O(c, this.hs, "c hs traffic", A, o), m = await O(c, this.hs, "s hs traffic", A, o);
-            [this.chk, this.chi] = await we(c, S, u, p, "encrypt"), [this.shk, this.shi] = await we(c, m, u, p, "decrypt");
+            [this.ch, this.ci] = await we(c, S, u, p, "encrypt"), [this.sh, this.si] = await we(c, m, u, p, "decrypt");
             const b = await O(c, m, "finished", P, o);
-            let C = !1, certRequested = !1;
+            let C = !1, rq = !1;
             const H = async e => {
                 switch (e.type) {
                     case l: {
@@ -710,7 +710,7 @@ const {TlsClient} = (() => {
                         break
                     }
                     case y:
-                        this.rh(e.raw), certRequested = !0;
+                        this.rh(e.raw), rq = !0;
                         break;
                     case w:
                         this.rh(e.raw);
@@ -739,55 +739,58 @@ const {TlsClient} = (() => {
                 }
             }, "err");
             const T = await G(c, this.ts()), E = await O(c, this.hs, "derived", await G(c, P), o), L = await X(c, E, new Uint8Array(o)), K = await O(c, L, "c ap traffic", T, o), U = await O(c, L, "s ap traffic", T, o);
-            this.cats = K, this.sats = U, [this.cak, this.cai] = await we(c, K, u, p, "encrypt"), [this.sak, this.sai] = await we(c, U, u, p, "decrypt");
-            let clientCert = P;
-            if (certRequested) clientCert = se(f, _(0, 0, 0, 0)), this.rh(clientCert);
+            this.at = K, this.bt = U, [this.ak, this.ai] = await we(c, K, u, p, "encrypt"), [this.bk, this.bi] = await we(c, U, u, p, "decrypt");
+            let ct = P;
+            if (rq) ct = se(f, _(0, 0, 0, 0)), this.rh(ct);
             const x = await O(c, S, "finished", P, o), _ = await $(c, x, await G(c, this.ts())), B = se(g, _);
-            this.rh(B), await t.write(ie(a, await this.e13h(W(clientCert, B, [s])))), this.csn = 0n, this.ssn = 0n
+            this.rh(B), await t.write(ie(a, await this.e13h(W(ct, B, [s])))), this.cn = 0n, this.qn = 0n
         }
         async e12(e, n, r = this.fc()) {
             const i = ye(r), s = W(i, [n], B(t), B(e.length));
             const a = i;
-            return W(a, await j(this.cwk, W(this.cwi, a), e, s))
+            return W(a, await j(this.ck, W(this.cv, a), e, s))
         }
         async d12(e, n, r = this.fs()) {
             const i = ye(r);
             const s = e.slice(0, 8), a = e.slice(8);
-            return z(this.swk, W(this.swi, s), a, W(i, [n], B(t), B(a.length - 16)))
+            return z(this.wk, W(this.wv, s), a, W(i, [n], B(t), B(a.length - 16)))
         }
         async e13h(e) {
-            const t = pe(this.chi, this.fc()), n = _(a, 3, 3, B(e.length + 16));
-            return j(this.chk, t, e, n)
+            const t = pe(this.ci, this.fc()), n = _(a, 3, 3, B(e.length + 16));
+            return j(this.ch, t, e, n)
         }
         async d13h(e) {
-            const t = pe(this.shi, this.fs()), n = _(a, 3, 3, B(e.length)), r = await z(this.shk, t, e, n);
+            const t = pe(this.si, this.fs()), n = _(a, 3, 3, B(e.length)), r = await z(this.sh, t, e, n);
             return de(r)
         }
         async e13(e, n = this.fc(), r = a) {
-            const t = W(e, [r]), i = pe(this.cai, n), s = _(a, 3, 3, B(t.length + 16));
-            return j(this.cak, i, t, s)
+            const t = W(e, [r]), i = pe(this.ai, n), s = _(a, 3, 3, B(t.length + 16));
+            return j(this.ak, i, t, s)
         }
-        async d13(e, n = this.fs(), r = this.sak, i = this.sai) {
+        async d13(e, n = this.fs(), r = this.bk, i = this.bi) {
             const s = pe(i, n), h = _(a, 3, 3, B(e.length)), c = await z(r, s, e, h);
             return de(c)
         }
         write(e) {
-            if (!this.hc || this.failed || this.closing) return Promise.reject(0);
-            const t = this.wq.then(() => this._write(e)), n = t.catch(e => {this.fail(); throw e});
+            if (!this.hc || this.fl || this.cg) return Promise.reject(0);
+            const t = this.wq.then(() => this._write(e)), n = t.catch(e => {
+                this.fail();
+                throw e
+            });
             return this.wq = n.catch(() => {}), n
         }
         async _write(e) {
-            if (this.failed || this.closing) throw 0;
+            if (this.fl || this.cg) throw 0;
             const t = this.sk.writable.getWriter();
             try {
                 if (e.length <= 16384) {
-                    await t.write(ie(a, this.is13 ? await this.e13(e) : await this.e12(e, a)));
+                    await t.write(ie(a, this.i3 ? await this.e13(e) : await this.e12(e, a)));
                 } else {
                     for (let n = 0; n < e.length;) {
                         const r = [];
                         for (let i = 0; i < 8 && n < e.length; i++, n += 16384) {
                             const i = e.subarray(n, Math.min(n + 16384, e.length)), s = this.fc();
-                            r.push(this.is13 ? this.e13(i, s).then(e => ie(a, e)) : this.e12(i, a, s).then(e => ie(a, e)))
+                            r.push(this.i3 ? this.e13(i, s).then(e => ie(a, e)) : this.e12(i, a, s).then(e => ie(a, e)))
                         }
                         await t.write(W(...await Promise.all(r)))
                     }
@@ -795,31 +798,34 @@ const {TlsClient} = (() => {
             } finally {t.releaseLock();}
         }
         read() {
-            if (this.failed) return Promise.reject(0);
-            return this._read().catch(e => {this.fail(); throw e})
+            if (this.fl) return Promise.reject(0);
+            return this._read().catch(e => {
+                this.fail();
+                throw e
+            })
         }
         async _read() {
             for (; ;) {
                 if (this.pq.length) return this.pq.shift();
-                if (this.closed) return null;
+                if (this.cl) return null;
                 const e = [];
                 let n;
                 for (; e.length < 8 && (n = this.rr.length ? this.rr.shift() : this.rp.next());) {
-                    if (this.is13) {
+                    if (this.i3) {
                         if (n.type === r) continue;
                         if (n.type !== a) throw 0
                     } else if (n.type !== a && n.type !== i && n.type !== s) throw 0;
                     e.push(n)
                 }
                 if (e.length) {
-                    if (!this.is13) {
-                        const t = this.ssn;
+                    if (!this.i3) {
+                        const t = this.qn;
                         if (t + BigInt(e.length - 1) > ge) throw 0;
                         const n = await Promise.all(e.map((e, n) => this.d12(e.fragment, e.type, t + BigInt(n))));
-                        this.ssn = t + BigInt(e.length);
+                        this.qn = t + BigInt(e.length);
                         for (let t = 0; t < n.length; t++) this.pt(n[t], e[t].type)
                     } else {
-                        const t = this.ssn, n = this.sak, r = this.sai;
+                        const t = this.qn, n = this.bk, r = this.bi;
                         if (t + BigInt(e.length - 1) > ge) throw 0;
                         let i;
                         try {
@@ -829,7 +835,7 @@ const {TlsClient} = (() => {
                         }
                         if (i) {
                             for (let n = 0; n < i.length; n++) {
-                                this.ssn = t + BigInt(n + 1);
+                                this.qn = t + BigInt(n + 1);
                                 const r = await this.p13(i[n]);
                                 if (null !== r) {
                                     n + 1 < e.length && this.rr.unshift(...e.slice(n + 1));
@@ -841,8 +847,8 @@ const {TlsClient} = (() => {
                             }
                         } else {
                             for (let n = 0; n < e.length; n++) {
-                                const r = await this.d13(e[n].fragment, this.ssn);
-                                this.ssn++;
+                                const r = await this.d13(e[n].fragment, this.qn);
+                                this.qn++;
                                 const i = await this.p13(r);
                                 if (null !== i) {
                                     n + 1 < e.length && this.rr.unshift(...e.slice(n + 1));
@@ -855,10 +861,10 @@ const {TlsClient} = (() => {
                         }
                     }
                     if (this.pq.length) return this.pq.shift();
-                    if (this.closed) return null;
+                    if (this.cl) return null;
                     continue
                 }
-                if (this.closed) return null;
+                if (this.cl) return null;
                 const t = this.sk.readable.getReader({mode: "byob"});
                 try {
                     const {value: e, done: n} = await this.rc(t, this.rb);
@@ -874,14 +880,16 @@ const {TlsClient} = (() => {
             }
         }
         pt(e, t) {
-            if (t === a) this.pq.push(e); else if (t === i) this.pa(e); else if (t === s) {
+            if (t === a) {
+                this.pq.push(e);
+            } else if (t === i) {
+                this.pa(e);
+            } else if (t === s) {
                 let t;
                 for (this.hp.feed(e); t = this.hp.next();) {}
             }
         }
-        pa(e) {
-            this.closed = !0, this.close()
-        }
+        pa(e) {this.cl = !0, this.close()}
         async p13({data: e, type: t}) {
             if (t === a) return this.pq.push(e), null;
             if (t === i) return this.pa(e), null;
@@ -898,37 +906,43 @@ const {TlsClient} = (() => {
         }
         async usr() {
             const e = this.cc.hash, t = q(e);
-            this.sats = await O(e, this.sats, "traffic upd", P, t), [this.sak, this.sai] = await we(e, this.sats, this.cc.keyLen, this.cc.ivLen, "decrypt"), this.ssn = 0n
+            this.bt = await O(e, this.bt, "traffic upd", P, t), [this.bk, this.bi] = await we(e, this.bt, this.cc.keyLen, this.cc.ivLen, "decrypt"), this.qn = 0n
         }
         qku() {
-            const e = this.wq.then(() => this.sku()), t = e.catch(e => {this.fail(); throw e});
+            const e = this.wq.then(() => this.sku()), t = e.catch(e => {
+                this.fail();
+                throw e
+            });
             return this.wq = t.catch(() => {}), t
         }
         async sku() {
-            if (this.failed || this.closing) throw 0;
+            if (this.fl || this.cg) throw 0;
             const e = this.sk.writable.getWriter();
             try {
                 const t = se(k, _(0));
                 await e.write(ie(a, await this.e13(t, this.fc(), s)))
             } finally {e.releaseLock()}
             const t = this.cc.hash, n = q(t);
-            this.cats = await O(t, this.cats, "traffic upd", P, n), [this.cak, this.cai] = await we(t, this.cats, this.cc.keyLen, this.cc.ivLen, "encrypt"), this.csn = 0n
+            this.at = await O(t, this.at, "traffic upd", P, n), [this.ak, this.ai] = await we(t, this.at, this.cc.keyLen, this.cc.ivLen, "encrypt"), this.cn = 0n
         }
         close() {
             if (this.cp) return this.cp;
-            if (this.failed || !this.hc) {
+            if (this.fl || !this.hc) {
                 try {this.sk.close()} catch {}
                 return this.cp = Promise.resolve()
             }
-            this.closing = !0;
+            this.cg = !0;
             const e = this.wq.then(async () => {
                 const e = this.sk.writable.getWriter();
                 try {
-                    const t = _(1, E), n = this.is13 ? await this.e13(t, this.fc(), i) : await this.e12(t, i);
-                    await e.write(ie(this.is13 ? a : i, n))
+                    const t = _(1, E), n = this.i3 ? await this.e13(t, this.fc(), i) : await this.e12(t, i);
+                    await e.write(ie(this.i3 ? a : i, n))
                 } finally {e.releaseLock()}
             });
-            return this.cp = e.catch(() => {}).finally(() => {this.closed = !0; try {this.sk.close()} catch {}}), this.wq = this.cp, this.cp
+            return this.cp = e.catch(() => {}).finally(() => {
+                this.cl = !0;
+                try {this.sk.close()} catch {}
+            }), this.wq = this.cp, this.cp
         }
     }
     return {TlsClient};
@@ -1452,10 +1466,6 @@ const createDnsWriter = (state, writable, close, closeAfterResponse) => {
         if (offset < buf.byteLength) pending = buf.slice(offset);
     };
 };
-const addrTypeIs = (hostname) => {
-    const char0 = hostname.charCodeAt(0);
-    return (char0 - 48) >>> 0 > 9 ? (char0 === 91 ? 4 : 3) : isIPv4(hostname) ? 1 : 3;
-};
 const connectNat64 = async (addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp) => {
     const nat64Prefixes = nat64Auth.charCodeAt(0) === 91 ? nat64Auth.slice(1, -1) : nat64Auth;
     if (!proxyAll) return concurrentConnect(`[${nat64Prefixes}6815:3598]`, port, limit);
@@ -1567,7 +1577,7 @@ const strategyExecutorMap = new Map([
         return connectViaTurnProxy(param, targetIp, port, true);
     }]
 ]);
-const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|gturns|turnsall|s5|socks|http|https|nat64|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
+const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|gturns|turnsall|s5|socks|http|https|nat64|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
 const establishTcpConnection = async (parsedRequest, request) => {
@@ -1591,7 +1601,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
             while ((m = paramRegex.exec(clean))) {p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true}
             if (p.speed) speed = p.speed;
             const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https, nat64 = p.gnat64 || p.nat64all || p.nat64, turn = p.gturn || p.turnall || p.turn, turns = p.gturns || p.turnsall || p.turns;
-            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.gnat64 || p.nat64all || p.gturn || p.turnall || p.gturns || p.turnsall || p.proxyall || p.globalproxy);
+            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.gnat64 || p.nat64all || p.gturn || p.turnall || p.gturns || p.turnsall || p.proxyall || p.globalproxy || p.global);
             if (!proxyAll) list.push({type: 0});
             const add = (v, t, txt) => {
                 if (!v) return;
@@ -1845,9 +1855,7 @@ const handleWebSocketConn = async (webSocket, request) => {
     let earlyDataHeader = null;
     if (refererHeader) {
         earlyDataHeader = protocolHeader.slice(request.headers.get('host').length);
-    } else if (protocolHeader) {
-        earlyDataHeader = protocolHeader;
-    }
+    } else if (protocolHeader) earlyDataHeader = protocolHeader;
     // @ts-ignore
     const earlyData = earlyDataHeader ? Uint8Array.fromBase64(earlyDataHeader, {alphabet: 'base64url'}) : null;
     const state = {socks5State: 0, tcpWriter: null, tcpSocket: null, ssInbound: null, ssOutbound: null, ssResponseSalt: null};
@@ -1880,6 +1888,7 @@ const handleGrpcPost = async (request, reader, buffer, used) => {
             const writable = {
                 send: (chunk) => {
                     const len = chunk.byteLength;
+                    if (!len) return;
                     let varintLen = 1;
                     for (let v = len >>> 7; v; v >>>= 7) varintLen++;
                     const totalPayloadLen = 1 + varintLen + len;
