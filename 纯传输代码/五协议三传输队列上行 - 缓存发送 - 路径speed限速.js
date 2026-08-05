@@ -353,14 +353,11 @@ const {TlsClient} = (() => {
     const e = 769, t = 771, n = 772, r = 20, i = 21, s = 22, a = 23, h = 1, c = 2, o = 4, l = 8, f = 11, u = 12, y = 13, p = 14, w = 15, d = 16, g = 20, k = 24, v = 0, A = 10, S = 11, m = 13, b = 16, C = 43, H = 45, T = 51, E = 0, L = new TextEncoder, K = new TextDecoder, P = new Uint8Array(0), U = new Map(Object.entries({
         TLS_AES_128_GCM_SHA256: {id: 4865, keyLen: 16, ivLen: 12, hash: "SHA-256", tls13: !0},
         TLS_AES_256_GCM_SHA384: {id: 4866, keyLen: 32, ivLen: 12, hash: "SHA-384", tls13: !0},
-        TLS_CHACHA20_POLY1305_SHA256: {id: 4867, keyLen: 32, ivLen: 12, hash: "SHA-256", tls13: !0, chacha: !0},
         TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256: {id: 49199, keyLen: 16, ivLen: 4, hash: "SHA-256", kex: "ECDHE"},
         TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384: {id: 49200, keyLen: 32, ivLen: 4, hash: "SHA-384", kex: "ECDHE"},
-        TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: {id: 52392, keyLen: 32, ivLen: 12, hash: "SHA-256", kex: "ECDHE", chacha: !0},
         TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: {id: 49195, keyLen: 16, ivLen: 4, hash: "SHA-256", kex: "ECDHE"},
-        TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: {id: 49196, keyLen: 32, ivLen: 4, hash: "SHA-384", kex: "ECDHE"},
-        TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: {id: 52393, keyLen: 32, ivLen: 12, hash: "SHA-256", kex: "ECDHE", chacha: !0}
-    }).map(([, e]) => [e.id, e])), I = new Map([[29, "X25519"], [23, "P-256"]]), x = [2052, 2053, 2054, 1025, 1281, 1537, 1027, 1283, 1539], _ = (...e) => {
+        TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: {id: 49196, keyLen: 32, ivLen: 4, hash: "SHA-384", kex: "ECDHE"}
+    }).map(([, e]) => [e.id, e])), I = new Map([[29, "X25519"], [23, "P-256"]]), x = [2052, 2053, 2054, 2055, 2056, 2057, 2058, 2059, 1027, 1283, 1539, 1025, 1281, 1537, 513, 515], _ = (...e) => {
         const t = e => {
             const n = [];
             for (const r of e) r instanceof Uint8Array ? n.push(...r) : Array.isArray(r) ? n.push(...t(r)) : "number" == typeof r && n.push(r);
@@ -419,77 +416,9 @@ const {TlsClient} = (() => {
         const r = await crypto.subtle.importKey("raw", t, {name: "ECDH", namedCurve: n}, !1, []), i = "P-384" === n ? 384 : "P-521" === n ? 528 : 256;
         return new Uint8Array(await crypto.subtle.deriveBits({name: "ECDH", public: r}, e, i))
     }
-    async function j(e, t, n, r) {
-        const i = await crypto.subtle.importKey("raw", e, {name: "AES-GCM"}, !1, ["encrypt"]);
-        return new Uint8Array(await crypto.subtle.encrypt({name: "AES-GCM", iv: t, additionalData: r, tagLength: 128}, i, n))
-    }
-    async function z(e, t, n, r) {
-        const i = await crypto.subtle.importKey("raw", e, {name: "AES-GCM"}, !1, ["decrypt"]);
-        return new Uint8Array(await crypto.subtle.decrypt({name: "AES-GCM", iv: t, additionalData: r, tagLength: 128}, i, n))
-    }
-    function J(e, t) {return (e << t | e >>> 32 - t) >>> 0}
-    function Q(e, t, n, r, i) {e[t] = e[t] + e[n] >>> 0, e[i] = J(e[i] ^ e[t], 16), e[r] = e[r] + e[i] >>> 0, e[n] = J(e[n] ^ e[r], 12), e[t] = e[t] + e[n] >>> 0, e[i] = J(e[i] ^ e[t], 8), e[r] = e[r] + e[i] >>> 0, e[n] = J(e[n] ^ e[r], 7)}
-    function Z(e, t, n) {
-        const r = new Uint32Array(16);
-        r[0] = 1634760805, r[1] = 857760878, r[2] = 2036477234, r[3] = 1797285236;
-        const i = new DataView(e.buffer, e.byteOffset, e.byteLength);
-        for (let e = 0; e < 8; e++) r[4 + e] = i.getUint32(4 * e, !0);
-        r[12] = t;
-        const s = new DataView(n.buffer, n.byteOffset, n.byteLength);
-        r[13] = s.getUint32(0, !0), r[14] = s.getUint32(4, !0), r[15] = s.getUint32(8, !0);
-        const a = new Uint32Array(r);
-        for (let e = 0; e < 10; e++) Q(a, 0, 4, 8, 12), Q(a, 1, 5, 9, 13), Q(a, 2, 6, 10, 14), Q(a, 3, 7, 11, 15), Q(a, 0, 5, 10, 15), Q(a, 1, 6, 11, 12), Q(a, 2, 7, 8, 13), Q(a, 3, 4, 9, 14);
-        for (let e = 0; e < 16; e++) a[e] = a[e] + r[e] >>> 0;
-        return new Uint8Array(a.buffer.slice(0))
-    }
-    function ee(e, t, n) {
-        const r = new Uint8Array(n.length);
-        let i = 1;
-        for (let s = 0; s < n.length; s += 64) {
-            const a = Z(e, i++, t), h = Math.min(64, n.length - s);
-            for (let e = 0; e < h; e++) r[s + e] = n[s + e] ^ a[e]
-        }
-        return r
-    }
-    function te(e, t) {
-        const n = e => {
-            let t = 0n;
-            for (let n = e.length - 1; n >= 0; n--) t = t << 8n | BigInt(e[n]);
-            return t
-        }, r = (1n << 130n) - 5n, i = (1n << 128n) - 1n, sBytes = e.slice(0, 16), a = n(e.slice(16, 32));
-        sBytes[3] &= 15, sBytes[7] &= 15, sBytes[11] &= 15, sBytes[15] &= 15;
-        sBytes[4] &= 252, sBytes[8] &= 252, sBytes[12] &= 252;
-        const s = n(sBytes);
-        let h = 0n;
-        for (let e = 0; e < t.length; e += 16) {
-            const i = t.subarray(e, Math.min(e + 16, t.length)), a = n(i) + (1n << BigInt(8 * i.length));
-            h = (h + a) * s % r
-        }
-        h = h + a & i;
-        const c = new Uint8Array(16);
-        for (let e = 0; e < 16; e++) c[e] = Number(h >> BigInt(8 * e) & 0xffn);
-        return c
-    }
-    function ne(e, t, n, r) {
-        const i = Z(e, 0, t).slice(0, 32), s = ee(e, t, n), a = (16 - r.length % 16) % 16, h = (16 - s.length % 16) % 16, c = new Uint8Array(r.length + a + s.length + h + 16);
-        c.set(r, 0), c.set(s, r.length + a);
-        const o = new DataView(c.buffer, r.length + a + s.length + h);
-        o.setBigUint64(0, BigInt(r.length), !0), o.setBigUint64(8, BigInt(s.length), !0);
-        const l = te(i, c);
-        return W(s, l)
-    }
-    function re(e, t, n, r) {
-        if (n.length < 16) throw 0;
-        const i = n.slice(-16), s = n.slice(0, -16), a = Z(e, 0, t).slice(0, 32), h = (16 - r.length % 16) % 16, c = (16 - s.length % 16) % 16, o = new Uint8Array(r.length + h + s.length + c + 16);
-        o.set(r, 0), o.set(s, r.length + h);
-        const l = new DataView(o.buffer, r.length + h + s.length + c);
-        l.setBigUint64(0, BigInt(r.length), !0), l.setBigUint64(8, BigInt(s.length), !0);
-        const f = te(a, o);
-        let u = 0;
-        for (let e = 0; e < 16; e++) u |= i[e] ^ f[e];
-        if (0 !== u) throw 0;
-        return ee(e, t, s)
-    }
+    async function J(e, t) {return crypto.subtle.importKey("raw", e, {name: "AES-GCM"}, !1, [t])}
+    async function j(e, t, n, r) {return new Uint8Array(await crypto.subtle.encrypt({name: "AES-GCM", iv: t, additionalData: r, tagLength: 128}, e, n))}
+    async function z(e, t, n, r) {return new Uint8Array(await crypto.subtle.decrypt({name: "AES-GCM", iv: t, additionalData: r, tagLength: 128}, e, n))}
     function ie(e, n, r = t) {return _(e, B(r), B(n.length), n)}
     function se(e, t) {return _(e, (e => [e >> 16 & 255, e >> 8 & 255, 255 & e])(t.length), t)}
     class ae {
@@ -526,7 +455,7 @@ const {TlsClient} = (() => {
         const h = R(e, t);
         t += 2;
         const c = e[t++];
-        let o = r, l = null, f = null;
+        let o = r, l = null, cookie = null;
         if (t < e.length) {
             const n = R(e, t);
             t += 2;
@@ -537,14 +466,14 @@ const {TlsClient} = (() => {
                 const r = R(e, t);
                 t += 2;
                 const i = e.slice(t, t + r);
-                if (t += r, n === C && r >= 2) {o = R(i, 0)} else if (n === T && r >= 4) {
-                    const e = R(i, 0), t = R(i, 2);
-                    l = {group: e, key: i.slice(4, 4 + t)}
-                } else {n === b && r >= 3 && (f = K.decode(i.slice(3, 3 + i[2])))}
+                if (t += r, n === C && r >= 2) {o = R(i, 0)} else if (n === T && r >= 2) {
+                    const e = R(i, 0), t = r >= 4 ? R(i, 2) : 0;
+                    l = {group: e, key: t ? i.slice(4, 4 + t) : P}
+                } else if (44 === n && r >= 2) {cookie = i}
             }
         }
         const u = new Uint8Array([207, 33, 173, 116, 229, 154, 97, 17, 190, 29, 140, 2, 30, 101, 184, 145, 194, 162, 17, 22, 122, 187, 140, 94, 7, 158, 9, 226, 200, 168, 51, 156]);
-        return {version: r, sr: i, sid: a, cs: h, comp: c, sv: o, ks: l, alpn: f, isHRR: N(i, u), isTls13: o === n}
+        return {version: r, sr: i, sid: a, cs: h, comp: c, sv: o, ks: l, cookie, isHRR: N(i, u), isTls13: o === n}
     }
     function oe(e) {
         let t = 0;
@@ -553,34 +482,6 @@ const {TlsClient} = (() => {
         t += 2;
         const r = e[t++];
         return {nc: n, spk: e.slice(t, t + r)}
-    }
-    function le(e, t = 0) {
-        let n = 0;
-        if (t) {
-            const t = e[n++];
-            n += t
-        }
-        if (n + 3 > e.length) return null;
-        const r = M(e, n);
-        if (n += 3, !r || n + 3 > e.length) return null;
-        const i = M(e, n);
-        return n += 3, i ? e.slice(n, n + i) : null
-    }
-    function fe(e) {
-        const t = {alpn: null};
-        let n = 2;
-        const r = 2 + R(e, 0);
-        for (; n + 4 <= r;) {
-            const r = R(e, n);
-            n += 2;
-            const i = R(e, n);
-            if (n += 2, r === b && i >= 3) {
-                const r = e[n + 2];
-                r > 0 && n + 3 + r <= n + i && (t.alpn = K.decode(e.slice(n + 3, n + 3 + r)))
-            }
-            n += i
-        }
-        return t
     }
     const F0 = e => {
         if (e = String(e ?? "").trim(), "[" === e[0] && "]" === e[e.length - 1] && (e = e.slice(1, -1)), !e || e.includes(":")) return "";
@@ -598,36 +499,33 @@ const {TlsClient} = (() => {
         }
         return ""
     }, Z0 = e => e && 1 === e[0] && 112 === e[1];
-    function ue(e, n, r, {tls13: i = !0, tls12: s = !0, alpn: a = null} = {}) {
+    function ue(e, n, r, {cookie: cookie = null, sessionId: sid = P, groups: supportedGroups = null} = {}) {
         n = F0(n);
-        const c = [];
-        i && c.push(4865, 4866, 4867), s && c.push(49199, 49200, 52392, 49195, 49196, 52393);
+        const c = [4865, 4866, 49199, 49200, 49195, 49196];
         const o = _(...c.flatMap(B)), l = [_(255, 1, 0, 1, 0)];
         if (n) {
             const e = L.encode(n), t = _(0, B(e.length), e);
             l.push(_(B(v), B(t.length + 2), B(t.length), t))
         }
-        l.push(_(B(S), 0, 2, 1, 0)), l.push(_(B(A), 0, 6, 0, 4, 0, 29, 0, 23));
+        l.push(_(B(S), 0, 2, 1, 0));
+        const groups = supportedGroups?.filter(e => I.has(e)) || [];
+        if (!groups.length) r?.x25519 && groups.push(29), r?.p256 && groups.push(23), r instanceof Uint8Array && groups.push(23);
+        if (!groups.length) throw 0;
+        const groupBytes = _(...groups.flatMap(B));
+        l.push(_(B(A), B(groupBytes.length + 2), B(groupBytes.length), groupBytes));
         const f = _(...x.flatMap(B));
         l.push(_(B(m), B(f.length + 2), B(f.length), f));
-        const u = Array.isArray(a) ? a.filter(Boolean) : a ? [a] : [];
-        if (u.length) {
-            const e = W(...u.map(e => {
-                const t = L.encode(e);
-                return _(t.length, t)
-            }));
-            l.push(_(B(b), B(e.length + 2), B(e.length), e))
-        }
-        if (i && r) {
+        cookie?.length && l.push(_(B(44), B(cookie.length), cookie));
+        if (r) {
             let e;
-            if (l.push(s ? _(B(C), 0, 5, 4, 3, 4, 3, 3) : _(B(C), 0, 3, 2, 3, 4)), l.push(_(B(H), 0, 2, 1, 1)), r?.x25519 && r?.p256) {e = W(_(0, 29, B(r.x25519.length), r.x25519), _(0, 23, B(r.p256.length), r.p256))} else if (r?.x25519) {e = _(0, 29, B(r.x25519.length), r.x25519)} else if (r?.p256) {e = _(0, 23, B(r.p256.length), r.p256)} else {
+            if (l.push(_(B(C), 0, 5, 4, 3, 4, 3, 3)), l.push(_(B(H), 0, 2, 1, 1)), r?.x25519 && r?.p256) {e = W(_(0, 29, B(r.x25519.length), r.x25519), _(0, 23, B(r.p256.length), r.p256))} else if (r?.x25519) {e = _(0, 29, B(r.x25519.length), r.x25519)} else if (r?.p256) {e = _(0, 23, B(r.p256.length), r.p256)} else {
                 if (!(r instanceof Uint8Array)) throw 0;
                 e = _(0, 23, B(r.length), r)
             }
             l.push(_(B(T), B(e.length + 2), B(e.length), e))
         }
         const y = W(...l);
-        return se(h, _(B(t), e, 0, B(o.length), o, 1, 0, B(y.length), y))
+        return se(h, _(B(t), e, sid.length, sid, B(o.length), o, 1, 0, B(y.length), y))
     }
     const ye = e => {
         const t = new Uint8Array(8);
@@ -636,14 +534,17 @@ const {TlsClient} = (() => {
         const n = e.slice(), r = ye(t);
         for (let e = 0; e < 8; e++) n[n.length - 8 + e] ^= r[e];
         return n
-    }, we = (e, t, n, r) => Promise.all([O(e, t, "key", P, n), O(e, t, "iv", P, r)]), de = e => {
+    }, we = async (e, t, n, r, i) => {
+        const [s, a] = await Promise.all([O(e, t, "key", P, n), O(e, t, "iv", P, r)]);
+        return [await J(s, i), a]
+    }, de = e => {
         let t = e.length - 1;
         for (; t >= 0 && 0 === e[t];) t--;
         if (t < 0) throw 0;
         return {data: e.slice(0, t), type: e[t]}
     }, ge = 0xffffffffffffffffn;
     class TlsClient {
-        constructor(e, t = {}) {this.sk = e, this.sn = t.serverName || "", this.s13 = !1 !== t.tls13, this.s12 = !1 !== t.tls12, this.alpn = Array.isArray(t.alpn) ? t.alpn : t.alpn ? [t.alpn] : null, this.to = t.timeout ?? 3e4, this.cr = D(32), this.sr = null, this.hk = [], this.hc = !1, this.na = null, this.cs = null, this.cc = null, this.is13 = !1, this.ms = null, this.hs = null, this.cwk = null, this.swk = null, this.cwi = null, this.swi = null, this.chk = null, this.shk = null, this.chi = null, this.shi = null, this.cak = null, this.sak = null, this.cai = null, this.sai = null, this.cats = null, this.sats = null, this.csn = 0n, this.ssn = 0n, this.rp = new ae, this.hp = new he, this.kps = new Map, this.ekp = null, this.sc = !1, this.pq = [], this.rr = [], this.closed = !1, this.closing = !1, this.failed = !1, this.wq = Promise.resolve(), this.rq = Promise.resolve(), this.cp = null, this.rb = new Uint8Array(65536)}
+        constructor(e, t = {}) {this.sk = e, this.sn = t.serverName || "", this.cr = D(32), this.sid = D(32), this.sr = null, this.hk = [], this.hc = !1, this.cs = null, this.cc = null, this.is13 = !1, this.ms = null, this.hs = null, this.cwk = null, this.swk = null, this.cwi = null, this.swi = null, this.chk = null, this.shk = null, this.chi = null, this.shi = null, this.cak = null, this.sak = null, this.cai = null, this.sai = null, this.cats = null, this.sats = null, this.csn = 0n, this.ssn = 0n, this.rp = new ae, this.hp = new he, this.kps = new Map, this.ekp = null, this.pq = [], this.rr = [], this.closed = !1, this.closing = !1, this.failed = !1, this.wq = Promise.resolve(), this.cp = null, this.rb = new Uint8Array(65536)}
         rh(e) {this.hk.push(e)}
         ts() {return 1 === this.hk.length ? this.hk[0] : W(...this.hk)}
         gfc(e) {return U.get(e) || null}
@@ -651,9 +552,8 @@ const {TlsClient} = (() => {
         fs() {if (this.ssn > ge) throw 0; return this.ssn++}
         fail() {this.failed = !0, this.closed = !0; try {this.sk.close()} catch {}}
         async rc(e, b) {
-            if (!this.to) return b ? e.read(b) : e.read();
             let t;
-            const n = b ? e.read(b) : e.read(), r = await Promise.race([n, new Promise(e => t = setTimeout(e, this.to, 0))]).finally(() => clearTimeout(t));
+            const n = b ? e.read(b) : e.read(), r = await Promise.race([n, new Promise(e => t = setTimeout(e, 3e4, 0))]).finally(() => clearTimeout(t));
             if (r) return r;
             try {await e.cancel("err")} catch {}
             try {await n} catch {}
@@ -681,24 +581,39 @@ const {TlsClient} = (() => {
                 }
             }, n)
         }
-        async ac(e) {
-            if (!e?.length) throw 0;
-            this.sc = !0
+        clearHandshakeState() {
+            this.cr = this.sid = this.sr = this.hk = this.ms = this.hs = this.chk = this.shk = this.chi = this.shi = this.ekp = null;
+            this.kps?.clear(), this.kps = null
         }
         async handshake() {
-            const [t, n] = await Promise.all([F("P-256"), F("X25519")]);
-            this.kps = new Map([[23, t], [29, n]]), this.ekp = t.kp;
+            const [t, n] = await Promise.allSettled([F("P-256"), F("X25519")]);
+            this.kps = new Map, "fulfilled" === t.status && this.kps.set(23, t.value), "fulfilled" === n.status && this.kps.set(29, n.value);
+            if (!this.kps.size) throw 0;
+            this.ekp = (this.kps.get(23) || this.kps.get(29)).kp;
             const r = this.sk.readable.getReader(), a = this.sk.writable.getWriter();
             try {
-                const h = ue(this.cr, this.sn, {x25519: n.pk, p256: t.pk}, {tls13: this.s13, tls12: this.s12, alpn: this.alpn});
+                const shares = {x25519: this.kps.get(29)?.pk, p256: this.kps.get(23)?.pk};
+                const supportedGroups = [29, 23].filter(e => this.kps.has(e));
+                const h = ue(this.cr, this.sn, shares, {sessionId: this.sid, groups: supportedGroups});
                 this.rh(h), await a.write(ie(s, h, e));
-                const o = await this.rsh(r);
-                if (o.isHRR) throw 0;
+                let o = await this.rsh(r);
+                if (o.isHRR) {
+                    const group = o.ks?.group;
+                    if (!I.has(group)) throw 0;
+                    const kp = await F(I.get(group));
+                    this.kps.set(group, kp), this.ekp = kp.kp;
+                    const digest = await G(this.cc.hash, h);
+                    this.hk = [se(254, digest), this.hk[this.hk.length - 1]];
+                    const retryShares = 29 === group ? {x25519: kp.pk} : {p256: kp.pk};
+                    const retry = ue(this.cr, this.sn, retryShares, {cookie: o.cookie, sessionId: this.sid, groups: supportedGroups});
+                    this.rh(retry), await a.write(ie(s, retry, e)), o = await this.rsh(r);
+                    if (o.isHRR) throw 0
+                }
                 if (o.ks?.group && this.kps.has(o.ks.group)) {
                     const e = this.kps.get(o.ks.group);
                     this.ekp = e.kp
                 }
-                o.isTls13 ? await this.h13(r, a, o) : await this.h12(r, a), this.hc = !0
+                o.isTls13 ? await this.h13(r, a, o) : await this.h12(r, a), this.hc = !0, this.clearHandshakeState()
             } finally {r.releaseLock(), a.releaseLock()}
         }
         async rsh(e) {
@@ -717,21 +632,18 @@ const {TlsClient} = (() => {
                         if (e.type !== c) continue;
                         this.rh(e.raw);
                         const t = ce(e.body), n = this.gfc(t.cs);
-                        if (!n || t.comp || t.isTls13 !== !!n.tls13 || t.isTls13 && !this.s13 || !t.isTls13 && (!this.s12 || t.sv !== 771)) throw 0;
-                        return this.sr = t.sr, this.cs = t.cs, this.cc = n, this.is13 = t.isTls13, this.na = t.alpn || null, t
+                        if (!n || t.comp || t.isTls13 !== !!n.tls13 || !t.isTls13 && t.sv !== 771) throw 0;
+                        return this.sr = t.sr, this.cs = t.cs, this.cc = n, this.is13 = t.isTls13, t
                     }
                 }
             }
         }
         async h12(e, t) {
-            let n = null, a = !1;
+            let n = null, a = !1, certRequested = !1;
             if (await this.ph(e, async e => {
                 switch (e.type) {
                     case f: {
                         this.rh(e.raw);
-                        const t = le(e.body);
-                        if (!t) throw 0;
-                        await this.ac(t);
                         break
                     }
                     case u:
@@ -740,22 +652,27 @@ const {TlsClient} = (() => {
                     case p:
                         return this.rh(e.raw), a = !0, 1;
                     case y:
-                        throw 0;
+                        this.rh(e.raw), certRequested = !0;
+                        break;
                     default:
                         this.rh(e.raw)
                 }
-            }, "err"), !this.sc) {throw 0}
+            }, "err"), !a) {throw 0}
             if (!n) throw 0;
             const h = I.get(n.nc);
             if (!h) throw 0;
             const c = this.kps.get(n.nc);
             if (!c) throw 0;
+            if (certRequested) {
+                const emptyCert = se(f, _(0, 0, 0));
+                this.rh(emptyCert), await t.write(ie(s, emptyCert))
+            }
             const o = await Y(c.kp.privateKey, n.spk, h), l = se(d, _(c.pk.length, c.pk));
             this.rh(l);
             const w = this.cc.hash;
             this.ms = await V(o, "master secret", W(this.cr, this.sr), 48, w);
             const k = this.cc.keyLen, v = this.cc.ivLen, A = await V(this.ms, "key expansion", W(this.sr, this.cr), 2 * k + 2 * v, w);
-            this.cwk = A.slice(0, k), this.swk = A.slice(k, 2 * k), this.cwi = A.slice(2 * k, 2 * k + v), this.swi = A.slice(2 * k + v, 2 * k + 2 * v), await t.write(ie(s, l)), await t.write(ie(r, _(1)));
+            [this.cwk, this.swk] = await Promise.all([J(A.slice(0, k), "encrypt"), J(A.slice(k, 2 * k), "decrypt")]), this.cwi = A.slice(2 * k, 2 * k + v), this.swi = A.slice(2 * k + v, 2 * k + 2 * v), await t.write(ie(s, l)), await t.write(ie(r, _(1)));
             const S = await V(this.ms, "client finished", await G(w, this.ts()), 12, w), m = se(g, S);
             this.rh(m), await t.write(ie(s, await this.e12(m, s)));
             let b = !1;
@@ -779,24 +696,22 @@ const {TlsClient} = (() => {
             const c = this.cc.hash, o = q(c), u = this.cc.keyLen, p = this.cc.ivLen, d = await Y(this.ekp.privateKey, n.ks.key, h), k = await X(c, null, new Uint8Array(o)), v = await O(c, k, "derived", await G(c, P), o);
             this.hs = await X(c, v, d);
             const A = await G(c, this.ts()), S = await O(c, this.hs, "c hs traffic", A, o), m = await O(c, this.hs, "s hs traffic", A, o);
-            [this.chk, this.chi] = await we(c, S, u, p), [this.shk, this.shi] = await we(c, m, u, p);
+            [this.chk, this.chi] = await we(c, S, u, p, "encrypt"), [this.shk, this.shi] = await we(c, m, u, p, "decrypt");
             const b = await O(c, m, "finished", P, o);
-            let C = !1;
+            let C = !1, certRequested = !1;
             const H = async e => {
                 switch (e.type) {
                     case l: {
-                        const t = fe(e.body);
-                        t.alpn && (this.na = t.alpn), this.rh(e.raw);
+                        this.rh(e.raw);
                         break
                     }
                     case f: {
-                        const t = le(e.body, 1);
-                        if (!t) throw 0;
-                        await this.ac(t), this.rh(e.raw);
+                        this.rh(e.raw);
                         break
                     }
                     case y:
-                        throw 0;
+                        this.rh(e.raw), certRequested = !0;
+                        break;
                     case w:
                         this.rh(e.raw);
                         break;
@@ -824,42 +739,36 @@ const {TlsClient} = (() => {
                 }
             }, "err");
             const T = await G(c, this.ts()), E = await O(c, this.hs, "derived", await G(c, P), o), L = await X(c, E, new Uint8Array(o)), K = await O(c, L, "c ap traffic", T, o), U = await O(c, L, "s ap traffic", T, o);
-            this.cats = K, this.sats = U, [this.cak, this.cai] = await we(c, K, u, p), [this.sak, this.sai] = await we(c, U, u, p);
+            this.cats = K, this.sats = U, [this.cak, this.cai] = await we(c, K, u, p, "encrypt"), [this.sak, this.sai] = await we(c, U, u, p, "decrypt");
+            let clientCert = P;
+            if (certRequested) clientCert = se(f, _(0, 0, 0, 0)), this.rh(clientCert);
             const x = await O(c, S, "finished", P, o), _ = await $(c, x, await G(c, this.ts())), B = se(g, _);
-            this.rh(B), await t.write(ie(a, await this.e13h(W(B, [s])))), this.csn = 0n, this.ssn = 0n
+            this.rh(B), await t.write(ie(a, await this.e13h(W(clientCert, B, [s])))), this.csn = 0n, this.ssn = 0n
         }
         async e12(e, n, r = this.fc()) {
             const i = ye(r), s = W(i, [n], B(t), B(e.length));
-            if (this.cc.chacha) {
-                const t = pe(this.cwi, r);
-                return ne(this.cwk, t, e, s)
-            }
             const a = i;
             return W(a, await j(this.cwk, W(this.cwi, a), e, s))
         }
         async d12(e, n, r = this.fs()) {
             const i = ye(r);
-            if (this.cc.chacha) {
-                const s = pe(this.swi, r);
-                return re(this.swk, s, e, W(i, [n], B(t), B(e.length - 16)))
-            }
             const s = e.slice(0, 8), a = e.slice(8);
             return z(this.swk, W(this.swi, s), a, W(i, [n], B(t), B(a.length - 16)))
         }
         async e13h(e) {
             const t = pe(this.chi, this.fc()), n = _(a, 3, 3, B(e.length + 16));
-            return this.cc.chacha ? ne(this.chk, t, e, n) : j(this.chk, t, e, n)
+            return j(this.chk, t, e, n)
         }
         async d13h(e) {
-            const t = pe(this.shi, this.fs()), n = _(a, 3, 3, B(e.length)), r = this.cc.chacha ? re(this.shk, t, e, n) : await z(this.shk, t, e, n);
+            const t = pe(this.shi, this.fs()), n = _(a, 3, 3, B(e.length)), r = await z(this.shk, t, e, n);
             return de(r)
         }
         async e13(e, n = this.fc(), r = a) {
             const t = W(e, [r]), i = pe(this.cai, n), s = _(a, 3, 3, B(t.length + 16));
-            return this.cc.chacha ? ne(this.cak, i, t, s) : j(this.cak, i, t, s)
+            return j(this.cak, i, t, s)
         }
         async d13(e, n = this.fs(), r = this.sak, i = this.sai) {
-            const s = pe(i, n), h = _(a, 3, 3, B(e.length)), c = this.cc.chacha ? re(r, s, e, h) : await z(r, s, e, h);
+            const s = pe(i, n), h = _(a, 3, 3, B(e.length)), c = await z(r, s, e, h);
             return de(c)
         }
         write(e) {
@@ -887,8 +796,7 @@ const {TlsClient} = (() => {
         }
         read() {
             if (this.failed) return Promise.reject(0);
-            const e = this.rq.then(() => this._read()), t = e.catch(e => {this.fail(); throw e});
-            return this.rq = t.catch(() => {}), t
+            return this._read().catch(e => {this.fail(); throw e})
         }
         async _read() {
             for (; ;) {
@@ -968,23 +876,21 @@ const {TlsClient} = (() => {
         pt(e, t) {
             if (t === a) this.pq.push(e); else if (t === i) this.pa(e); else if (t === s) {
                 let t;
-                for (this.hp.feed(e); t = this.hp.next();) if (t.type === k) throw 0
+                for (this.hp.feed(e); t = this.hp.next();) {}
             }
         }
         pa(e) {
-            if (2 !== e.length) throw 0;
-            if (e[1] !== E) throw 0;
             this.closed = !0, this.close()
         }
         async p13({data: e, type: t}) {
             if (t === a) return this.pq.push(e), null;
             if (t === i) return this.pa(e), null;
-            if (t !== s) throw 0;
+            if (t !== s) return null;
             let n, r = null;
             for (this.hp.feed(e); n = this.hp.next();) {
                 if (n.type === o) continue;
                 if (n.type === k) {
-                    if (1 !== n.body.length || n.body[0] > 1 || null !== r) throw 0;
+                    if (1 !== n.body.length || n.body[0] > 1 || null !== r) continue;
                     r = n.body[0]
                 }
             }
@@ -992,7 +898,7 @@ const {TlsClient} = (() => {
         }
         async usr() {
             const e = this.cc.hash, t = q(e);
-            this.sats = await O(e, this.sats, "traffic upd", P, t), [this.sak, this.sai] = await we(e, this.sats, this.cc.keyLen, this.cc.ivLen), this.ssn = 0n
+            this.sats = await O(e, this.sats, "traffic upd", P, t), [this.sak, this.sai] = await we(e, this.sats, this.cc.keyLen, this.cc.ivLen, "decrypt"), this.ssn = 0n
         }
         qku() {
             const e = this.wq.then(() => this.sku()), t = e.catch(e => {this.fail(); throw e});
@@ -1006,7 +912,7 @@ const {TlsClient} = (() => {
                 await e.write(ie(a, await this.e13(t, this.fc(), s)))
             } finally {e.releaseLock()}
             const t = this.cc.hash, n = q(t);
-            this.cats = await O(t, this.cats, "traffic upd", P, n), [this.cak, this.cai] = await we(t, this.cats, this.cc.keyLen, this.cc.ivLen), this.csn = 0n
+            this.cats = await O(t, this.cats, "traffic upd", P, n), [this.cak, this.cai] = await we(t, this.cats, this.cc.keyLen, this.cc.ivLen, "encrypt"), this.csn = 0n
         }
         close() {
             if (this.cp) return this.cp;
@@ -1027,6 +933,31 @@ const {TlsClient} = (() => {
     }
     return {TlsClient};
 })();
+const tlsStreamAdapter = (tls, initial = new Uint8Array(0)) => ({
+    readable: {
+        getReader() {
+            let leftOver = initial;
+            return {
+                async read(view) {
+                    if (leftOver.length) {
+                        const len = Math.min(leftOver.length, view.byteLength);
+                        view.set(leftOver.subarray(0, len));
+                        leftOver = leftOver.subarray(len);
+                        return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
+                    }
+                    const data = await tls.read();
+                    if (!data) return {done: true};
+                    const len = Math.min(data.length, view.byteLength);
+                    view.set(data.subarray(0, len));
+                    if (data.length > len) leftOver = data.subarray(len);
+                    return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
+                },
+                releaseLock() {}
+            };
+        }
+    },
+    writable: new WritableStream({write(chunk) {return tls.write(chunk)}, close() {tls.close()}, abort() {tls.close()}})
+});
 const staticHeaders = `User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\r\nProxy-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n`;
 const encodedStaticHeaders = textEncoder.encode(staticHeaders);
 const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addrBytes, limit, useTls = false) => {
@@ -1092,35 +1023,7 @@ const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addr
             while ((i = buffer.indexOf(13, i)) !== -1 && i <= bytesRead - 4) {
                 if (buffer[i + 1] === 10 && buffer[i + 2] === 13 && buffer[i + 3] === 10) {
                     if (!isCustomTls) reader.releaseLock();
-                    return isCustomTls ? {
-                        readable: {
-                            getReader() {
-                                let leftOver = buffer.subarray(i + 4, bytesRead);
-                                return {
-                                    async read(view) {
-                                        if (leftOver.length) {
-                                            const len = Math.min(leftOver.length, view.byteLength);
-                                            view.set(leftOver.subarray(0, len));
-                                            leftOver = leftOver.subarray(len);
-                                            return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
-                                        }
-                                        const tlsData = await tlsClient.read();
-                                        if (!tlsData) return {done: true};
-                                        const len = Math.min(tlsData.length, view.byteLength);
-                                        view.set(tlsData.subarray(0, len));
-                                        if (tlsData.length > len) leftOver = tlsData.subarray(len);
-                                        return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
-                                    },
-                                    releaseLock() {}
-                                };
-                            }
-                        },
-                        writable: new WritableStream({
-                            write(c) {return tlsClient.write(c)},
-                            close() {tlsClient.close()},
-                            abort() {tlsClient.close()}
-                        })
-                    } : proxySocket;
+                    return isCustomTls ? tlsStreamAdapter(tlsClient, buffer.subarray(i + 4, bytesRead)) : proxySocket;
                 }
                 i++;
             }
@@ -1307,33 +1210,9 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, targetI
         if (r?.type !== 0x10B) throw 0;
         if (!cIsCustom) cr.releaseLock(), cw.releaseLock();
         if (!dIsCustom) dr.releaseLock(), dw.releaseLock();
-        const readable = dIsCustom ? {
-            getReader() {
-                let leftOver = new Uint8Array(0);
-                return {
-                    async read(view) {
-                        if (leftOver.length) {
-                            const len = Math.min(leftOver.length, view.byteLength);
-                            view.set(leftOver.subarray(0, len));
-                            leftOver = leftOver.subarray(len);
-                            return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
-                        }
-                        const tlsData = await dataTls.read();
-                        if (!tlsData) return {done: true};
-                        const len = Math.min(tlsData.length, view.byteLength);
-                        view.set(tlsData.subarray(0, len));
-                        if (tlsData.length > len) leftOver = tlsData.subarray(len);
-                        return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
-                    },
-                    releaseLock() {}
-                };
-            }
-        } : data.readable;
-        const writable = dIsCustom ? new WritableStream({
-            write(c) {return dataTls.write(c)},
-            close() {dataTls.close()},
-            abort() {dataTls.close()}
-        }) : data.writable;
+        const tlsStream = dIsCustom ? tlsStreamAdapter(dataTls) : null;
+        const readable = tlsStream ? tlsStream.readable : data.readable;
+        const writable = tlsStream ? tlsStream.writable : data.writable;
         return {readable, writable, close, extra};
     } catch {
         close();
