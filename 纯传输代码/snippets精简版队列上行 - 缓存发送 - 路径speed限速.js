@@ -10,7 +10,7 @@ const startThreshold = 50 * 1024 * 1024;
 const maxChunkLen = 64 * 1024;
 const flushTime = 4;
 const urlParamCacheLimit = 20;
-const proxyStrategyOrder = ['socks', 'http', 'https'];
+const proxyStrategyOrder = ['socks', 'http', 'https', 'turn', 'turns'];
 const proxyIpAddrs = {EU: 'ProxyIP.DE.CMLiussss.net', AS: 'ProxyIP.SG.CMLiussss.net', JP: 'ProxyIP.JP.CMLiussss.net', US: 'ProxyIP.US.CMLiussss.net'};//分区域proxyip
 const coloRegions = {
     JP: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']),
@@ -136,6 +136,149 @@ const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addr
     }
     return null;
 };
+const magic = new Uint8Array([0x21, 0x12, 0xA4, 0x42]);
+const cat = (...a) => {
+    let len = 0, i = 0, o = 0;
+    for (; i < a.length; i++) len += a[i].length;
+    const r = new Uint8Array(len);
+    for (i = 0; i < a.length; i++) {
+        r.set(a[i], o);
+        o += a[i].length;
+    }
+    return r;
+};
+const stunAttr = (t, v) => {
+    const l = v.length, b = new Uint8Array(4 + l + (4 - l % 4) % 4);
+    b[0] = t >> 8, b[1] = t & 0xff, b[2] = l >> 8, b[3] = l & 0xff, b.set(v, 4);
+    return b;
+};
+const stunMsg = (t, tid, a) => {
+    const bd = cat(...a), l = bd.length, h = new Uint8Array(20 + l);
+    h[0] = t >> 8, h[1] = t & 0xff, h[2] = l >> 8, h[3] = l & 0xff, h.set(magic, 4), h.set(tid, 8), h.set(bd, 20);
+    return h;
+};
+const xorPeer = (ip, port) => {
+    const b = new Uint8Array(8);
+    b[1] = 1;
+    const xp = port ^ 0x2112;
+    b[2] = xp >> 8, b[3] = xp & 0xff;
+    let p = 0, num = 0;
+    for (let i = 0; i < ip.length; i++) {
+        const c = ip.charCodeAt(i);
+        if (c === 46) {
+            b[4 + p] = num ^ magic[p++];
+            num = 0;
+        } else {num = num * 10 + (c - 48)}
+    }
+    b[4 + p] = num ^ magic[p];
+    return b;
+};
+const parseStun = d => {
+    if (d.length < 20 || magic.some((v, i) => d[4 + i] !== v)) return null;
+    const ml = (d[2] << 8) | d[3], attrs = {};
+    for (let o = 20; o + 4 <= 20 + ml;) {
+        const t = (d[o] << 8) | d[o + 1], l = (d[o + 2] << 8) | d[o + 3];
+        if (o + 4 + l > d.length) break;
+        attrs[t] = d.subarray(o + 4, o + 4 + l);
+        o += 4 + l + (4 - l % 4) % 4;
+    }
+    return {type: (d[0] << 8) | d[1], attrs};
+};
+const parseErr = d => d?.length >= 4 ? (d[2] & 7) * 100 + d[3] : 0;
+const addIntegrity = async (m, cryptoKey) => {
+    const l = m.length, c = new Uint8Array(l + 24);
+    c.set(m);
+    const nl = (m[2] << 8 | m[3]) + 24;
+    c[2] = nl >> 8, c[3] = nl & 0xff;
+    const sig = new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, c.subarray(0, l)));
+    c[l] = 0x00, c[l + 1] = 0x08, c[l + 2] = 0x00, c[l + 3] = 0x14, c.set(sig, l + 4);
+    return c;
+};
+const readStun = async (rd, buf) => {
+    let chunks = buf && buf.length ? [buf] : [];
+    let total = buf ? buf.length : 0;
+    const pull = async () => {
+        const {done, value} = await rd.read();
+        if (done) throw 0;
+        chunks.push(value);
+        total += value.length;
+    };
+    const getB = () => {
+        if (chunks.length === 1) return chunks[0];
+        const b = new Uint8Array(total);
+        let o = 0;
+        for (let i = 0; i < chunks.length; i++) {
+            b.set(chunks[i], o);
+            o += chunks[i].length;
+        }
+        chunks = [b];
+        return b;
+    };
+    try {
+        while (total < 20) await pull();
+        let b = getB();
+        if (b[4] !== 0x21 || b[5] !== 0x12 || b[6] !== 0xA4 || b[7] !== 0x42) return null;
+        const n = 20 + ((b[2] << 8) | b[3]);
+        if (n > 8192) return null;
+        while (total < n) await pull();
+        b = getB();
+        return [parseStun(b.subarray(0, n)), total > n ? b.subarray(n) : null];
+    } catch {return null}
+};
+const md5 = async s => new Uint8Array(await crypto.subtle.digest('MD5', textEncoder.encode(s)));
+const connectViaTurnProxy = async ({hostname, port, username, password}, targetIp, targetPort, useTls = false) => {
+    let ctrl = null, data = null, dataPromise = null;
+    const close = () => [ctrl, data].forEach(s => {try {s?.close()} catch {}});
+    const createConn = () => createConnect(hostname, port, useTls ? {secureTransport: 'on', allowHalfOpen: false} : undefined);
+    try {
+        ctrl = await createConn();
+        const cw = ctrl.writable.getWriter(), cr = ctrl.readable.getReader();
+        const tidBuf = new Uint8Array(12), tid = () => crypto.getRandomValues(tidBuf), tp = new Uint8Array([6, 0, 0, 0]);
+        await cw.write(stunMsg(0x003, tid(), [stunAttr(0x019, tp)]));
+        let [r, ex] = await readStun(cr);
+        if (!r) throw 0;
+        let cryptoKey = null, aa = [];
+        const sign = m => cryptoKey ? addIntegrity(m, cryptoKey) : m;
+        const peer = stunAttr(0x012, xorPeer(targetIp, targetPort));
+        if (r.type === 0x113 && username && parseErr(r.attrs[0x009]) === 401) {
+            const realm = textDecoder.decode(r.attrs[0x014] ?? []), nonce = r.attrs[0x015] ?? [];
+            const keyBytes = await md5(`${username}:${realm}:${password}`);
+            cryptoKey = await crypto.subtle.importKey('raw', keyBytes, {name: 'HMAC', hash: 'SHA-1'}, false, ['sign']);
+            aa = [stunAttr(0x006, textEncoder.encode(username)), stunAttr(0x014, textEncoder.encode(realm)), stunAttr(0x015, nonce)];
+            const [am, pm, cm] = await Promise.all([
+                sign(stunMsg(0x003, tid(), [stunAttr(0x019, tp), ...aa])),
+                sign(stunMsg(0x008, tid(), [peer, ...aa])),
+                sign(stunMsg(0x00A, tid(), [peer, ...aa]))
+            ]);
+            await cw.write(cat(am, pm, cm));
+            dataPromise = createConn();
+            [r, ex] = await readStun(cr, ex);
+            if (r?.type !== 0x103) throw 0;
+        } else if (r.type === 0x103) {
+            const [pm, cm] = await Promise.all([
+                sign(stunMsg(0x008, tid(), [peer, ...aa])),
+                sign(stunMsg(0x00A, tid(), [peer, ...aa]))
+            ]);
+            await cw.write(cat(pm, cm));
+            dataPromise = createConn();
+        } else {throw 0}
+        [r, ex] = await readStun(cr, ex);
+        if (r?.type !== 0x108) throw 0;
+        [r] = await readStun(cr, ex);
+        if (r?.type !== 0x10A || !r.attrs[0x02A]) throw 0;
+        data = await dataPromise;
+        const dw = data.writable.getWriter(), dr = data.readable.getReader();
+        await dw.write(await sign(stunMsg(0x00B, tid(), [stunAttr(0x02A, r.attrs[0x02A]), ...aa])));
+        let extra;
+        [r, extra] = await readStun(dr);
+        if (r?.type !== 0x10B) throw 0;
+        cr.releaseLock(), cw.releaseLock(), dr.releaseLock(), dw.releaseLock();
+        return {readable: data.readable, writable: data.writable, close, extra};
+    } catch {
+        close();
+        return null;
+    }
+};
 const parseAddress = (buffer, offset, addrType) => {
     const addressLength = addrType === 3 ? buffer[offset++] : addrType === 1 ? 4 : addrType === 4 ? 16 : null;
     if (addressLength === null) return null;
@@ -169,17 +312,30 @@ const parseShadow = (firstChunk) => {
     const port = (firstChunk[addrInfo.dataOffset] << 8) | firstChunk[addrInfo.dataOffset + 1];
     return {addrType, addrBytes: addrInfo.addrBytes, dataOffset: addrInfo.dataOffset + 2, port};
 };
-const dohJsonOptions = {headers: {'Accept': 'application/dns-json'}}, txtdnsCache = new Map();
-const txtdnsResult = async (txtdns) => {
-    const now = Date.now(), cached = txtdnsCache.get(txtdns);
+const dohJsonOptions = {headers: {'Accept': 'application/dns-json'}}, dnsCache = new Map();
+const dnsResult = async (name, type, parse) => {
+    const key = type + ':' + name, now = Date.now(), cached = dnsCache.get(key);
     if (cached) {
         if (cached.expire > now) return cached.value;
-        txtdnsCache.delete(txtdns);
+        dnsCache.delete(key);
     }
-    const response = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(txtdns)}&type=TXT`, dohJsonOptions);
+    const response = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}`, dohJsonOptions);
     if (!response.ok) return null;
     const dnsResult = await response.json(), answer = dnsResult.Answer || dnsResult.answer;
     if (!answer || answer.length === 0) return null;
+    const result = parse(answer);
+    if (result) dnsCache.set(key, {expire: now + 300000, value: result});
+    return result;
+};
+const dnsAResult = hostname => dnsResult(hostname, 'A', answer => {
+    let ip = null;
+    for (let i = 0, len = answer.length; i < len; i++) if (answer[i].type === 1 && answer[i].data) {
+        ip = answer[i].data;
+        break;
+    }
+    return ip;
+});
+const txtdnsResult = txtdns => dnsResult(txtdns, 'TXT', answer => {
     let txtData, i = 0, len = answer.length;
     for (; i < len; i++) if (answer[i].type === 16) {
         txtData = answer[i].data;
@@ -192,10 +348,8 @@ const txtdnsResult = async (txtdns) => {
         const s = raw[i].trim();
         if (s) prefixes.push(s);
     }
-    const result = prefixes.length ? prefixes : null;
-    if (result) txtdnsCache.set(txtdns, {expire: now + 300000, value: result});
-    return result;
-};
+    return prefixes.length ? prefixes : null;
+});
 const proxyIpRegex = /william|fxpip|hhtxt/;
 const connectProxyIp = async (param, txt) => {
     if (txt || proxyIpRegex.test(param)) {
@@ -226,11 +380,29 @@ const strategyExecutorMap = new Map([
     }],
     [3, async (_parsedRequest, param, txt) => {
         return connectProxyIp(param, txt);
+    }],
+    // @ts-ignore
+    [5, async ({addrType, port, addrBytes}, param) => {
+        let targetIp = binaryAddrToString(addrType, addrBytes);
+        if (addrType === 3) {
+            targetIp = await dnsAResult(targetIp);
+            if (!targetIp) return null;
+        } else if (addrType === 4) {return null}
+        return connectViaTurnProxy(parseAuthString(param), targetIp, port);
+    }],
+    // @ts-ignore
+    [7, async ({addrType, port, addrBytes}, param) => {
+        let targetIp = binaryAddrToString(addrType, addrBytes);
+        if (addrType === 3) {
+            targetIp = await dnsAResult(targetIp);
+            if (!targetIp) return null;
+        } else if (addrType === 4) {return null}
+        return connectViaTurnProxy(parseAuthString(param), targetIp, port, true);
     }]
 ]);
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
-const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|s5|socks|http|https|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
+const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gturn|turnall|gturns|turnsall|s5|socks|http|https|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy)/gi;
 const establishTcpConnection = async (parsedRequest, request) => {
     let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [], speed;
     if (l > 3 && clean.charCodeAt(l - 4) === 47 && clean.charCodeAt(l - 3) === 84 && clean.charCodeAt(l - 2) === 117 && clean.charCodeAt(l - 1) === 110) {
@@ -248,8 +420,8 @@ const establishTcpConnection = async (parsedRequest, request) => {
             let m, p = Object.create(null);
             while ((m = paramRegex.exec(clean))) p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true;
             if (p.speed) speed = p.speed;
-            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https;
-            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.proxyall || p.globalproxy);
+            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https, turn = p.gturn || p.turnall || p.turn, turns = p.gturns || p.turnsall || p.turns;
+            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.gturn || p.turnall || p.gturns || p.turnsall || p.proxyall || p.globalproxy);
             if (!proxyAll) list.push({type: 0});
             const add = (v, t, txt) => {
                 if (!v) return;
@@ -258,7 +430,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
             };
             for (let i = 0; i < proxyStrategyOrder.length; i++) {
                 const k = proxyStrategyOrder[i];
-                k === 'socks' ? add(s5, 1) : k === 'http' ? add(http, 2) : k === 'https' ? add(https, 6) : 0;
+                k === 'socks' ? add(s5, 1) : k === 'http' ? add(http, 2) : k === 'https' ? add(https, 6) : k === 'turn' ? add(turn, 5) : k === 'turns' ? add(turns, 7) : 0;
             }
             if (proxyAll) {if (!list.length) list.push({type: 0})} else {
                 add(p.ip, 3), add(p.txtip, 3, true);
@@ -436,6 +608,7 @@ const handleWebSocketConn = async (webSocket, request) => {
                 const tcpWriter = tcpSocket.writable.getWriter();
                 if (payload.byteLength) tcpWriter.write(payload);
                 tcpWrite = createBufferedTcpWriter(tcpWriter, close);
+                if (tcpSocket.extra?.length) webSocket.send(tcpSocket.extra);
                 manualPipe(tcpSocket.readable, webSocket, close, tcpResult.speed);
             })();
         } catch {close()}
