@@ -535,7 +535,7 @@ const {TlsClient} = (() => {
         let t = e.length - 1;
         for (; t >= 0 && 0 === e[t];) t--;
         if (t < 0) throw 0;
-        return {data: e.slice(0, t), type: e[t]}
+        return {data: e.subarray(0, t), type: e[t]}
     }, ge = 0xffffffffffffffffn;
     class TlsClient {
         constructor(e, t = {}) {this.sk = e, this.sn = t.serverName || "", this.cr = D(32), this.id = D(32), this.sr = null, this.ht = [], this.hc = !1, this.cs = null, this.cc = null, this.i3 = !1, this.ms = null, this.hs = null, this.ck = null, this.wk = null, this.cv = null, this.wv = null, this.ch = null, this.sh = null, this.ci = null, this.si = null, this.ak = null, this.bk = null, this.ai = null, this.bi = null, this.at = null, this.bt = null, this.cn = 0n, this.qn = 0n, this.rp = new ae, this.hp = new he, this.kp = new Map, this.ep = null, this.pq = [], this.rr = [], this.cl = !1, this.cg = !1, this.fl = !1, this.wq = Promise.resolve(), this.cp = null, this.rb = new Uint8Array(65536)}
@@ -869,13 +869,8 @@ const {TlsClient} = (() => {
                 try {
                     const {value: e, done: n} = await this.rc(t, this.rb);
                     if (n) return null;
-                    if (e.length > 49152) {
-                        this.rp.feed(e.subarray());
-                        this.rb = new Uint8Array(65536);
-                    } else {
-                        this.rp.feed(e.slice());
-                        this.rb = new Uint8Array(e.buffer);
-                    }
+                    this.rp.feed(e);
+                    this.rb = new Uint8Array(e.buffer);
                 } finally {t.releaseLock()}
             }
         }
