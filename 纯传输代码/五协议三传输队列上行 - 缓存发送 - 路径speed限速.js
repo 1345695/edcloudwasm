@@ -7,13 +7,14 @@
 // xhttp模式的trojan导入链接：trojan://passwd@104.16.40.11:2053?security=tls&sni=sni&alpn=h2&fp=chrome&allowInsecure=1&type=xhttp&host=host&path=%2F&mode=stream-one#trojan-xhttp
 // 复制协议开头的导入链接导入再手动修改即可
  * ========================== URL路径参数速查表 =================================================================================
- * 多个参数用 & 连接, 示例: /?s5=host:port&ip=1.2.3.4:443   注: s5/http/https/nat64/ip 均支持逗号分隔多个地址以实现并发连接
+ * 多个参数用 & 连接, 示例: /?s5=host:port&ip=1.2.3.4:443   注: s5/http/https/sstp/turn/turns/nat64/ip 均支持逗号分隔多个地址以实现并发连接
  * s5/gs5/socks/s5all         - 直连失败SOCKS5代理 / 全局SOCKS5        示例: s5=user1:pass1@host1:port1,user2:pass2@host2:port2
  * http/ghttp/httpall         - 直连失败HTTP代理 / 全局HTTP            示例: http=user1:pass1@host1:port1,user2:pass2@host2:port2
  * https/ghttps/httpsall      - 直连失败HTTPS代理 / 全局HTTPS          示例: https=user1:pass1@host1:port1,user2:pass2@host2:port2
  * nat64/gnat64/nat64all      - 直连失败NAT64转换 / 全局NAT64          示例: nat64=64:ff9b::,64:ff9b:1::
  * turn/gturn/turnall         - 直连失败TURN代理 / 全局TURN            示例: turn=user1:pass1@host1:port1,user2:pass2@host2:port2
  * turns/gturns/turnsall      - 直连失败TURNS代理 / 全局TURNS          示例: turns=user1:pass1@host1:port1,user2:pass2@host2:port2
+ * sstp/gsstp/sstpall         - 直连失败SSTP代理 / 全局SSTP            示例: sstp=user1:pass1@host1:443,user2:pass2@host2:443
  * ip/txtip/proxyip           - 直连失败时的备用IP                     示例: ip=1.2.3.4:443,5.6.7.8:443
  * proxyall/globalproxy/global - 全局代理标志,无s5/http/https参数时纯直连 示例: proxyall=1
  * speed                      - 下行限速,单位默认MB/s，大于256时解除限速  示例: speed=50 表示50MB/s
@@ -57,9 +58,9 @@ let concurrency = 4;//socket获取并发数
 // ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
 // ---------------------------------------------------------------------------------
-//五者的socket获取顺序，全局模式下为这五个的顺序，非全局为：直连>socks>http>https>turn>nat64>proxyip>finallyProxyHost
+//出站socket获取顺序，全局模式下按数组顺序，非全局为：直连>socks>http>https>sstp>turn>turns>nat64>proxyip>finallyProxyHost
 /**- **警告**: snippets只支持最大两次connect，所以snippets全局nat64不能使用域名访问，snippets访问cf失败的备用只有第一个有效*/
-const proxyStrategyOrder = ['socks', 'http', 'https', 'turn', 'turns', 'nat64'];
+const proxyStrategyOrder = ['socks', 'http', 'https', 'sstp', 'turn', 'turns', 'nat64'];
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
 const proxyIpAddrs = {EU: 'ProxyIP.DE.CMLiussss.net', AS: 'ProxyIP.SG.CMLiussss.net', JP: 'ProxyIP.JP.CMLiussss.net', US: 'ProxyIP.US.CMLiussss.net'};//分区域proxyip
@@ -254,7 +255,7 @@ const parseHostPort = (addr, defaultPort) => {
     }
     return [host, (port = parseInt(port), isNaN(port) ? defaultPort : port)];
 };
-const parseAuthString = (authParam) => {
+const parseAuthString = (authParam, defaultPort = 1080) => {
     let username, password, hostStr;
     const atIndex = authParam.lastIndexOf('@');
     if (atIndex === -1) {hostStr = authParam} else {
@@ -266,7 +267,7 @@ const parseAuthString = (authParam) => {
             password = cred.substring(colonIndex + 1);
         }
     }
-    const [hostname, port] = parseHostPort(hostStr, 1080);
+    const [hostname, port] = parseHostPort(hostStr, defaultPort);
     return {username, password, hostname, port};
 };
 const isIPv4 = (str) => {
@@ -1052,6 +1053,380 @@ const cat = (...a) => {
     }
     return r;
 };
+const sstpEmpty = new Uint8Array(0), sstpMss = 1400, sstpTcpWindowScale = 6, sstpTcpReceiveWindow = 4 * 1024 * 1024;
+const sstpU16 = (b, o) => (b[o] << 8) | b[o + 1];
+const sstpU32 = (b, o) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
+const sstpRandomBytes = length => crypto.getRandomValues(new Uint8Array(length));
+const sstpRandom16 = () => sstpU16(sstpRandomBytes(2), 0);
+const sstpRandom32 = () => sstpU32(sstpRandomBytes(4), 0);
+const sstpIpv4Bytes = ip => isIPv4(ip) ? new Uint8Array(ip.split('.').map(Number)) : null;
+const sstpChecksum = (data, offset, length) => {
+    let sum = 0;
+    for (let i = offset; i < offset + length - 1; i += 2) sum += sstpU16(data, i);
+    if (length & 1) sum += data[offset + length - 1] << 8;
+    while (sum >> 16) sum = (sum & 0xffff) + (sum >>> 16);
+    return (~sum) & 0xffff;
+};
+const createSstpSession = (username, password) => {
+    const userBytes = textEncoder.encode(username), passBytes = textEncoder.encode(password);
+    if (!userBytes.length || !passBytes.length || userBytes.length > 255 || passBytes.length > 255) throw new Error('Invalid SSTP credentials');
+    let buffered = sstpEmpty, packetId = 1, socket = null, reader = null, writer = null, serverHost = '', serverPort = 443;
+    let readBuffer = new ArrayBuffer(65536), writeQueue = Promise.resolve(), closed = false;
+    const readMore = async () => {
+        if (closed || !reader) throw new Error('SSTP socket is closed');
+        const saved = buffered.length ? new Uint8Array(buffered) : null;
+        const {value, done} = await reader.read(new Uint8Array(readBuffer));
+        if (done || !value?.byteLength) throw new Error('SSTP socket ended');
+        readBuffer = value.buffer;
+        buffered = saved ? cat(saved, value) : value;
+    };
+    const readBytes = async length => {
+        while (buffered.length < length) await readMore();
+        const value = buffered.subarray(0, length);
+        buffered = buffered.subarray(length);
+        return value;
+    };
+    const readLine = async () => {
+        for (; ;) {
+            const index = buffered.indexOf(10);
+            if (index !== -1) {
+                const line = textDecoder.decode(buffered.subarray(0, index)).replace(/\r$/, '');
+                buffered = buffered.subarray(index + 1);
+                return line;
+            }
+            if (buffered.length > 16384) throw new Error('SSTP HTTP header is too large');
+            await readMore();
+        }
+    };
+    const readPacket = async (timeoutMs = 10000) => {
+        let timer;
+        const packet = (async () => {
+            const header = await readBytes(4);
+            const length = sstpU16(header, 2) & 0x0fff;
+            if (header[0] !== 0x10 || length < 4) throw new Error('Invalid SSTP packet');
+            return {ctrl: (header[1] & 1) !== 0, body: length === 4 ? sstpEmpty : await readBytes(length - 4)};
+        })();
+        try {
+            return await Promise.race([packet, new Promise((_, reject) => timer = setTimeout(() => reject(new Error('SSTP read timeout')), timeoutMs))]);
+        } finally {clearTimeout(timer)}
+    };
+    const dataPacket = frame => {
+        const length = 6 + frame.length, packet = new Uint8Array(length);
+        packet.set([0x10, 0, ((length >> 8) & 0x0f) | 0x80, length & 0xff, 0xff, 0x03]);
+        packet.set(frame, 6);
+        return packet;
+    };
+    const controlPacket = (messageType, attrs = []) => {
+        const attrsLength = attrs.reduce((sum, attr) => sum + 4 + attr.data.length, 0), packet = new Uint8Array(8 + attrsLength), view = new DataView(packet.buffer);
+        packet[0] = 0x10, packet[1] = 1;
+        view.setUint16(2, packet.length | 0x8000), view.setUint16(4, messageType), view.setUint16(6, attrs.length);
+        attrs.reduce((offset, attr) => {
+            packet[offset + 1] = attr.id;
+            view.setUint16(offset + 2, 4 + attr.data.length);
+            packet.set(attr.data, offset + 4);
+            return offset + 4 + attr.data.length;
+        }, 8);
+        return packet;
+    };
+    const pppPacket = (protocol, code, id, options = []) => {
+        const optionsLength = options.reduce((sum, option) => sum + 2 + option.data.length, 0), frame = new Uint8Array(6 + optionsLength), view = new DataView(frame.buffer);
+        view.setUint16(0, protocol), frame[2] = code, frame[3] = id, view.setUint16(4, 4 + optionsLength);
+        options.reduce((offset, option) => {
+            frame[offset] = option.type, frame[offset + 1] = 2 + option.data.length;
+            frame.set(option.data, offset + 2);
+            return offset + 2 + option.data.length;
+        }, 6);
+        return frame;
+    };
+    const papPacket = id => {
+        const pppLength = 6 + userBytes.length + passBytes.length, frame = new Uint8Array(2 + pppLength), view = new DataView(frame.buffer);
+        view.setUint16(0, 0xc023), frame[2] = 1, frame[3] = id, view.setUint16(4, pppLength);
+        frame[6] = userBytes.length, frame.set(userBytes, 7), frame[7 + userBytes.length] = passBytes.length, frame.set(passBytes, 8 + userBytes.length);
+        return frame;
+    };
+    const parsePpp = data => {
+        let offset = data.length >= 2 && data[0] === 0xff && data[1] === 3 ? 2 : 0;
+        if (data.length - offset < 4) return null;
+        const protocol = sstpU16(data, offset);
+        if (protocol === 0x0021) return {protocol, ip: data.subarray(offset + 2)};
+        return data.length - offset >= 6 ? {protocol, code: data[offset + 2], id: data[offset + 3], payload: data.subarray(offset + 6), raw: data.subarray(offset)} : null;
+    };
+    const parseOptions = data => {
+        const options = [];
+        for (let offset = 0; offset + 2 <= data.length;) {
+            const type = data[offset], length = data[offset + 1];
+            if (length < 2 || offset + length > data.length) break;
+            options.push({type, data: data.subarray(offset + 2, offset + length)});
+            offset += length;
+        }
+        return options;
+    };
+    const write = data => {
+        const operation = writeQueue.then(() => {
+            if (closed || !writer) throw new Error('SSTP socket is closed');
+            return writer.write(data);
+        });
+        writeQueue = operation.catch(() => {});
+        return operation;
+    };
+    const handleControl = async body => {
+        if (body.length < 2) return;
+        const messageType = sstpU16(body, 0);
+        if (messageType === 8) {
+            await write(controlPacket(9));
+        } else if (messageType === 6) {
+            await write(controlPacket(7));
+            throw new Error('SSTP disconnected');
+        } else if (messageType === 5 || messageType === 7) throw new Error('SSTP aborted');
+    };
+    const connectSstp = async (hostname, port) => {
+        socket = connect({hostname, port}, {secureTransport: 'on', allowHalfOpen: false});
+        await socket.opened;
+        if (closed) throw new Error('SSTP socket is closed');
+        reader = socket.readable.getReader({mode: 'byob'}), writer = socket.writable.getWriter(), serverHost = hostname, serverPort = port;
+    };
+    const establish = async () => {
+        const authority = serverPort === 443 ? serverHost : `${serverHost}:${serverPort}`;
+        const http = textEncoder.encode(`SSTP_DUPLEX_POST /sra_{BA195980-CD49-458b-9E23-C84EE0ADCD75}/ HTTP/1.1\r\nHost: ${authority}\r\nContent-Length: 18446744073709551615\r\nSSTPCORRELATIONID: {${crypto.randomUUID()}}\r\n\r\n`);
+        const protocolAttr = new Uint8Array(2), mru = new Uint8Array(2);
+        new DataView(protocolAttr.buffer).setUint16(0, 1), new DataView(mru.buffer).setUint16(0, 1500);
+        await write(cat(http, controlPacket(1, [{id: 1, data: protocolAttr}]), dataPacket(pppPacket(0xc021, 1, packetId++, [{type: 1, data: mru}]))));
+        const statusLine = await readLine();
+        let headersEnded = false;
+        for (let i = 0; i < 64; i++) if ((await readLine()) === '') {
+            headersEnded = true;
+            break;
+        }
+        if (!headersEnded || !/^HTTP\/1\.[01] 200(?:\s|$)/i.test(statusLine)) throw new Error('SSTP HTTP handshake failed');
+        let localLcpDone = false, authSent = false, ipcpSent = false, done = false, myIp = null;
+        const sendAuth = async () => {
+            if (!authSent) authSent = true, await write(dataPacket(papPacket(packetId++)));
+        };
+        const sendIpcp = async ip => {
+            ipcpSent = true;
+            await write(dataPacket(pppPacket(0x8021, 1, packetId++, [{type: 3, data: ip}])));
+        };
+        for (let attempts = 0; attempts < 40 && !done; attempts++) {
+            const packet = await readPacket(15000);
+            if (packet.ctrl) {
+                await handleControl(packet.body);
+                continue;
+            }
+            const ppp = parsePpp(packet.body);
+            if (!ppp) continue;
+            if (ppp.protocol === 0xc021) {
+                if (ppp.code === 1) {
+                    const ack = new Uint8Array(ppp.raw);
+                    ack[2] = 2;
+                    await write(dataPacket(ack));
+                    if (localLcpDone) await sendAuth();
+                } else if (ppp.code === 2) {
+                    localLcpDone = true;
+                    await sendAuth();
+                }
+            } else if (ppp.protocol === 0xc023) {
+                if (ppp.code === 2 && !ipcpSent) {
+                    await sendIpcp(new Uint8Array(4));
+                } else if (ppp.code === 3) throw new Error('SSTP PAP authentication failed');
+            } else if (ppp.protocol === 0x8021) {
+                if (ppp.code === 1) {
+                    const ack = new Uint8Array(ppp.raw);
+                    ack[2] = 2;
+                    await write(dataPacket(ack));
+                } else if (ppp.code === 3) {
+                    const option = parseOptions(ppp.payload).find(item => item.type === 3 && item.data.length === 4);
+                    if (option) {
+                        myIp = Array.from(option.data).join('.');
+                        await sendIpcp(new Uint8Array(option.data));
+                    }
+                } else if (ppp.code === 2) {
+                    const option = parseOptions(ppp.payload).find(item => item.type === 3 && item.data.length === 4);
+                    if (option) myIp = Array.from(option.data).join('.');
+                    done = true;
+                }
+            }
+        }
+        if (!myIp || !sstpIpv4Bytes(myIp)) throw new Error('SSTP did not assign an IPv4 address');
+        return myIp;
+    };
+    const close = () => {
+        if (closed) return;
+        closed = true;
+        try {reader?.cancel()?.catch?.(() => {})} catch {}
+        try {writer?.abort?.()?.catch?.(() => {})} catch {}
+        try {socket?.close()} catch {}
+    };
+    return {connect: connectSstp, establish, readPacket, parsePpp, dataPacket, controlPacket, handleControl, write, close, get bufferedLength() {return buffered.length}};
+};
+const createSstpTcp = (sstp, sourceIp, targetIp, targetPort) => {
+    const sourceBytes = sstpIpv4Bytes(sourceIp), targetBytes = sstpIpv4Bytes(targetIp);
+    if (!sourceBytes || !targetBytes) throw new Error('SSTP TCP requires IPv4');
+    const sourcePort = 10000 + sstpRandom16() % 50000, ipTemplate = new Uint8Array(20), pseudoHeader = new Uint8Array(12 + 20 + sstpMss);
+    let sequence = sstpRandom32(), acknowledgement = 0, peerWindowScale = 0;
+    ipTemplate.set([0x45, 0, 0, 0, 0, 0, 0x40, 0, 64, 6]), ipTemplate.set(sourceBytes, 12), ipTemplate.set(targetBytes, 16);
+    pseudoHeader.set(sourceBytes), pseudoHeader.set(targetBytes, 4), pseudoHeader[9] = 6;
+    const frame = (flags, payload = sstpEmpty) => {
+        const syn = (flags & 0x02) !== 0, tcpOptions = syn ? new Uint8Array([2, 4, sstpMss >> 8, sstpMss & 0xff, 3, 3, sstpTcpWindowScale, 1]) : sstpEmpty;
+        const tcpHeaderLength = 20 + tcpOptions.length, tcpLength = tcpHeaderLength + payload.length, ipLength = 20 + tcpLength, packetLength = 8 + ipLength, packet = new Uint8Array(packetLength), view = new DataView(packet.buffer);
+        packet.set([0x10, 0, ((packetLength >> 8) & 0x0f) | 0x80, packetLength & 0xff, 0xff, 3, 0, 0x21]), packet.set(ipTemplate, 8);
+        view.setUint16(10, ipLength), view.setUint16(12, sstpRandom16()), view.setUint16(18, sstpChecksum(packet, 8, 20));
+        view.setUint16(28, sourcePort), view.setUint16(30, targetPort), view.setUint32(32, sequence), view.setUint32(36, acknowledgement);
+        packet[40] = (tcpHeaderLength / 4) << 4, packet[41] = flags;
+        view.setUint16(42, syn ? 65535 : Math.min(65535, Math.ceil(sstpTcpReceiveWindow / (1 << peerWindowScale))));
+        if (tcpOptions.length) packet.set(tcpOptions, 48);
+        if (payload.length) packet.set(payload, 28 + tcpHeaderLength);
+        pseudoHeader[10] = tcpLength >> 8, pseudoHeader[11] = tcpLength & 0xff, pseudoHeader.set(packet.subarray(28, 28 + tcpLength), 12);
+        view.setUint16(44, sstpChecksum(pseudoHeader, 0, 12 + tcpLength));
+        return packet;
+    };
+    const match = ip => {
+        if (ip.length < 40 || (ip[0] >> 4) !== 4 || ip[9] !== 6) return null;
+        const ipHeaderLength = (ip[0] & 0x0f) * 4;
+        if (ipHeaderLength < 20 || ip.length < ipHeaderLength + 20) return null;
+        for (let i = 0; i < 4; i++) if (ip[12 + i] !== targetBytes[i] || ip[16 + i] !== sourceBytes[i]) return null;
+        if (sstpU16(ip, ipHeaderLength) !== targetPort || sstpU16(ip, ipHeaderLength + 2) !== sourcePort) return null;
+        const tcpHeaderLength = ((ip[ipHeaderLength + 12] >> 4) & 0x0f) * 4, dataOffset = ipHeaderLength + tcpHeaderLength;
+        if (tcpHeaderLength < 20 || dataOffset > ip.length) return null;
+        let windowScale = null;
+        for (let offset = ipHeaderLength + 20; offset < dataOffset;) {
+            const type = ip[offset];
+            if (type === 0) break;
+            if (type === 1) {
+                offset++;
+                continue;
+            }
+            if (offset + 1 >= dataOffset) break;
+            const length = ip[offset + 1];
+            if (length < 2 || offset + length > dataOffset) break;
+            if (type === 3 && length === 3) windowScale = Math.min(ip[offset + 2], 14);
+            offset += length;
+        }
+        return {flags: ip[ipHeaderLength + 13], sequence: sstpU32(ip, ipHeaderLength + 4), dataOffset, windowScale};
+    };
+    const handshake = async () => {
+        await sstp.write(frame(0x02));
+        sequence = (sequence + 1) >>> 0;
+        for (let attempts = 0; attempts < 30; attempts++) {
+            const packet = await sstp.readPacket(15000);
+            if (packet.ctrl) {
+                await sstp.handleControl(packet.body);
+                continue;
+            }
+            const ppp = sstp.parsePpp(packet.body);
+            if (!ppp || ppp.protocol !== 0x0021) continue;
+            const matched = match(ppp.ip);
+            if (!matched) continue;
+            if (matched.flags & 0x04) throw new Error('SSTP target reset TCP handshake');
+            if ((matched.flags & 0x12) === 0x12) {
+                peerWindowScale = matched.windowScale ?? 0;
+                acknowledgement = (matched.sequence + 1) >>> 0;
+                await sstp.write(frame(0x10));
+                return;
+            }
+        }
+        throw new Error('SSTP TCP handshake timed out');
+    };
+    return {frame, match, handshake, get sequence() {return sequence}, set sequence(value) {sequence = value}, get acknowledgement() {return acknowledgement}, set acknowledgement(value) {acknowledgement = value}};
+};
+const resolveSstpTargetIpv4 = async ({addrType, addrBytes, isHttp}) => {
+    const targetIp = binaryAddrToString(addrType, addrBytes);
+    if (isHttp) addrType = addrTypeIs(targetIp);
+    if (addrType === 1) return targetIp;
+    if (addrType !== 3) return null;
+    const answer = await concurrentDnsResolve(targetIp, 'A');
+    return answer?.find(record => record.type === 1 && isIPv4(record.data))?.data ?? null;
+};
+const connectViaSstpProxy = async (sstpAuth, parsedRequest) => {
+    if (!sstpAuth || parsedRequest.addrType === 4) return null;
+    const {hostname, port} = sstpAuth;
+    if (!hostname || !(port > 0 && port <= 65535)) return null;
+    const hasCredentials = !!sstpAuth.username && !!sstpAuth.password;
+    const username = hasCredentials ? sstpAuth.username : 'vpn', password = hasCredentials ? sstpAuth.password : 'vpn';
+    let closed = false, controller = null;
+    const sstp = createSstpSession(username, password), close = () => {
+        if (closed) return;
+        closed = true, sstp.close();
+    };
+    try {
+        const targetIpPromise = resolveSstpTargetIpv4(parsedRequest);
+        await sstp.connect(hostname, port);
+        const [sourceIp, targetIp] = await Promise.all([sstp.establish(), targetIpPromise]);
+        if (!targetIp) throw new Error('SSTP target has no IPv4 address');
+        const tcp = createSstpTcp(sstp, sourceIp, targetIp, parsedRequest.port);
+        await tcp.handshake();
+        const readable = new ReadableStream({
+            type: 'bytes',
+            start(streamController) {controller = streamController},
+            cancel: close
+        });
+        (async () => {
+            let pending = [], pendingLength = 0;
+            const flush = () => {
+                if (!pendingLength || closed) return;
+                controller.enqueue(pending.length === 1 ? pending[0] : cat(...pending));
+                pending = [], pendingLength = 0;
+                sstp.write(tcp.frame(0x10)).catch(close);
+            };
+            try {
+                for (; ;) {
+                    const packet = await sstp.readPacket(60000);
+                    if (packet.ctrl) {
+                        await sstp.handleControl(packet.body);
+                        continue;
+                    }
+                    const ppp = sstp.parsePpp(packet.body);
+                    if (!ppp || ppp.protocol !== 0x0021) continue;
+                    const matched = tcp.match(ppp.ip);
+                    if (!matched) continue;
+                    if (matched.flags & 0x04) throw new Error('SSTP target reset connection');
+                    if (matched.dataOffset < ppp.ip.length) {
+                        const data = ppp.ip.subarray(matched.dataOffset);
+                        if (data.length) {
+                            tcp.acknowledgement = (matched.sequence + data.length) >>> 0;
+                            pending.push(new Uint8Array(data)), pendingLength += data.length;
+                        }
+                    }
+                    if (matched.flags & 0x01) {
+                        flush();
+                        tcp.acknowledgement = (tcp.acknowledgement + 1) >>> 0;
+                        await sstp.write(tcp.frame(0x11));
+                        return;
+                    }
+                    if (sstp.bufferedLength < 4 || pendingLength >= 32768) flush();
+                }
+            } catch {} finally {
+                try {pendingLength && flush()} catch {}
+                try {controller.close()} catch {}
+                close();
+            }
+        })();
+        const writable = new WritableStream({
+            async write(chunk) {
+                if (closed) throw new Error('SSTP connection is closed');
+                const data = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+                if (data.length <= sstpMss) {
+                    const frame = tcp.frame(0x18, data);
+                    tcp.sequence = (tcp.sequence + data.length) >>> 0;
+                    await sstp.write(frame);
+                    return;
+                }
+                const frames = [];
+                for (let offset = 0; offset < data.length; offset += sstpMss) {
+                    const segment = data.subarray(offset, Math.min(offset + sstpMss, data.length));
+                    frames.push(tcp.frame(0x18, segment));
+                    tcp.sequence = (tcp.sequence + segment.length) >>> 0;
+                }
+                await sstp.write(cat(...frames));
+            },
+            close() {return closed ? undefined : sstp.write(tcp.frame(0x11)).catch(close)},
+            abort: close
+        });
+        return {readable, writable, close};
+    } catch {
+        close();
+        return null;
+    }
+};
 const stunAttr = (t, v) => {
     const l = v.length, b = new Uint8Array(4 + l + (4 - l % 4) % 4);
     b[0] = t >> 8, b[1] = t & 0xff, b[2] = l >> 8, b[3] = l & 0xff, b.set(v, 4);
@@ -1622,6 +1997,9 @@ const strategyExecutorMap = new Map([
     }],
     [7, async (parsedRequest, param, _limit, _txt) => {
         return connectViaTurnProxy(param, parsedRequest, true);
+    }],
+    [8, async (parsedRequest, param, _limit, _txt) => {
+        return connectViaSstpProxy(param, parsedRequest);
     }]
 ]);
 const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
@@ -1646,7 +2024,7 @@ const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
         throw err;
     });
 };
-const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|gturns|turnsall|s5|socks|http|https|nat64|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
+const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|gturns|turnsall|gsstp|sstpall|sstp|s5|socks|http|https|nat64|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
 const establishTcpConnection = async (parsedRequest, request) => {
@@ -1669,8 +2047,8 @@ const establishTcpConnection = async (parsedRequest, request) => {
             let m;
             while ((m = paramRegex.exec(clean))) {p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true}
             if (p.speed) speed = p.speed;
-            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https, nat64 = p.gnat64 || p.nat64all || p.nat64, turn = p.gturn || p.turnall || p.turn, turns = p.gturns || p.turnsall || p.turns;
-            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.gnat64 || p.nat64all || p.gturn || p.turnall || p.gturns || p.turnsall || p.proxyall || p.globalproxy || p.global);
+            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https, sstp = p.gsstp || p.sstpall || p.sstp, nat64 = p.gnat64 || p.nat64all || p.nat64, turn = p.gturn || p.turnall || p.turn, turns = p.gturns || p.turnsall || p.turns;
+            const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.gsstp || p.sstpall || p.gnat64 || p.nat64all || p.gturn || p.turnall || p.gturns || p.turnsall || p.proxyall || p.globalproxy || p.global);
             if (!proxyAll) list.push({type: 0});
             const add = (v, t, txt) => {
                 if (!v) return;
@@ -1681,6 +2059,10 @@ const establishTcpConnection = async (parsedRequest, request) => {
                     const parsedParams = parts.map(part => {
                         if (t === 4) return {nat64Auth: part, proxyAll};
                         if (t === 1 || t === 2 || t === 5 || t === 6 || t === 7) return parseAuthString(part);
+                        if (t === 8) {
+                            const auth = parseAuthString(part, 443);
+                            return auth.username && auth.password ? auth : {...auth, username: 'vpn', password: 'vpn'};
+                        }
                         return part;
                     });
                     list.push({type: t, param: parsedParams, concurrent: true});
@@ -1688,7 +2070,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
             };
             for (let i = 0; i < proxyStrategyOrder.length; i++) {
                 const k = proxyStrategyOrder[i];
-                add(k === 'socks' ? s5 : k === 'http' ? http : k === 'https' ? https : k === 'turn' ? turn : k === 'turns' ? turns : nat64, k === 'socks' ? 1 : k === 'http' ? 2 : k === 'https' ? 6 : k === 'turn' ? 5 : k === 'turns' ? 7 : 4);
+                add(k === 'socks' ? s5 : k === 'http' ? http : k === 'https' ? https : k === 'sstp' ? sstp : k === 'turn' ? turn : k === 'turns' ? turns : nat64, k === 'socks' ? 1 : k === 'http' ? 2 : k === 'https' ? 6 : k === 'sstp' ? 8 : k === 'turn' ? 5 : k === 'turns' ? 7 : 4);
             }
             if (proxyAll) {
                 if (!list.length) list.push({type: 0});

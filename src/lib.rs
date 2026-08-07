@@ -6,7 +6,7 @@ use core::panic::PanicInfo;
 // 内存布局与全局状态 (紧凑版)
 // ==========================================
 
-/// RESULT 槽位分配 (WASM 与 JS 共享的 34 个状态标志/返回值):
+/// RESULT 槽位分配 (WASM 与 JS 共享的 36 个状态标志/返回值):
 /// --- 全局配置区域 ---
 /// [0]: 是否启用 VLESS UUID 验证 (1为启用)
 /// [1]: 是否启用 Trojan 密码 Hash 验证 (1为启用)
@@ -36,7 +36,8 @@ use core::panic::PanicInfo;
 /// [28]: TxtIP 参数偏移,  [29]: TxtIP 参数长度
 /// [30]: Speed 参数偏移,  [31]: Speed 参数长度
 /// [32]: Turns 参数偏移,  [33]: Turns 参数长度
-static mut RESULT: [i32; 34] = [0; 34];
+/// [34]: SSTP 参数偏移,   [35]: SSTP 参数长度
+static mut RESULT: [i32; 36] = [0; 36];
 
 static mut COMMON_BUF: [u8; 1024] = [0; 1024]; // 1KB 通用数据缓冲区
 static mut UUID: [u8; 16] = [0; 16]; // VLESS UUID
@@ -989,7 +990,7 @@ struct UrlKeyDef {
     is_g: bool,
 }
 
-static URL_PARSE_KEYS: [UrlKeyDef; 22] = [
+static URL_PARSE_KEYS: [UrlKeyDef; 25] = [
     UrlKeyDef { buf: b"speed", res_idx: 30, is_g: false },
     UrlKeyDef { buf: b"gs5", res_idx: 15, is_g: true },
     UrlKeyDef { buf: b"s5all", res_idx: 15, is_g: true },
@@ -1003,6 +1004,8 @@ static URL_PARSE_KEYS: [UrlKeyDef; 22] = [
     UrlKeyDef { buf: b"turnsall", res_idx: 32, is_g: true },
     UrlKeyDef { buf: b"gturn", res_idx: 24, is_g: true },
     UrlKeyDef { buf: b"turnall", res_idx: 24, is_g: true },
+    UrlKeyDef { buf: b"gsstp", res_idx: 34, is_g: true },
+    UrlKeyDef { buf: b"sstpall", res_idx: 34, is_g: true },
     UrlKeyDef { buf: b"s5", res_idx: 15, is_g: false },
     UrlKeyDef { buf: b"socks", res_idx: 15, is_g: false },
     UrlKeyDef { buf: b"http", res_idx: 17, is_g: false },
@@ -1012,6 +1015,7 @@ static URL_PARSE_KEYS: [UrlKeyDef; 22] = [
     UrlKeyDef { buf: b"nat64", res_idx: 19, is_g: false },
     UrlKeyDef { buf: b"turns", res_idx: 32, is_g: false },
     UrlKeyDef { buf: b"turn", res_idx: 24, is_g: false },
+    UrlKeyDef { buf: b"sstp", res_idx: 34, is_g: false },
 ];
 
 /// 解析 URL 参数并提取配置
@@ -1021,7 +1025,7 @@ pub unsafe extern "C" fn parseUrlWasm(url_len: i32) {
     let data_ptr = COMMON_BUF.as_ptr();
     let mut is_all = false;
     
-    for idx in [15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33] {
+    for idx in [15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] {
         set_res(idx, -1);
     }
 
@@ -1060,7 +1064,7 @@ pub unsafe extern "C" fn parseUrlWasm(url_len: i32) {
         
         let mut matched = false;
         // [循环] 参数匹配
-        for j in 0..22 {
+        for j in 0..25 {
             let key = URL_PARSE_KEYS.get_unchecked(j);
             let k_len = key.buf.len();
             
