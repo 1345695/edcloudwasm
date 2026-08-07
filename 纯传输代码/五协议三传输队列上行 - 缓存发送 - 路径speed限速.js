@@ -1087,7 +1087,7 @@ const parseStun = d => {
         attrs[t] = d.subarray(o + 4, o + 4 + l);
         o += 4 + l + (4 - l % 4) % 4;
     }
-    return {type: (d[0] << 8) | d[1], attrs};
+    return {type: (d[0] << 8) | d[1], attrs, tid: d.slice(8, 20)};
 };
 const parseErr = d => d?.length >= 4 ? (d[2] & 7) * 100 + d[3] : 0;
 const addIntegrity = async (m, cryptoKey) => {
@@ -1131,79 +1131,147 @@ const readStun = async (rd, buf) => {
     } catch {return null}
 };
 const md5 = async s => new Uint8Array(await crypto.subtle.digest('MD5', textEncoder.encode(s)));
-const connectViaTurnProxy = async ({hostname, port, username, password}, targetIp, targetPort, useTls = false) => {
+const connectViaTurnProxy = async ({hostname, port, username, password}, {addrType, port: targetPort, addrBytes, isHttp}, useTls = false) => {
+    let targetIp = binaryAddrToString(addrType, addrBytes);
+    if (isHttp) addrType = addrTypeIs(targetIp);
+    if (addrType === 3) {
+        targetIp = concurrentDnsResolve(targetIp, 'A')
+            .then(answer => answer?.find(record => record.type === 1)?.data ?? null)
+            .catch(() => null);
+    } else if (addrType === 4) {return null}
     let ctrl = null, data = null, dataPromise = null, ctrlTls = null, dataTls = null;
+    let cw = null, cr = null, ctrlExtra = null, closed = false;
     const proxyIsIp = addrTypeIs(hostname) !== 3;
-    const close = () => [ctrl, data, ctrlTls, dataTls].forEach(s => {try {s?.close()} catch {}});
-    const createConn = async () => {
-        let sock, tls = null, isCustom = false;
-        if (useTls && proxyIsIp) {
-            isCustom = true;
-            sock = await createConnect(hostname, port, {allowHalfOpen: false});
-        } else {
-            try {
-                sock = await createConnect(hostname, port, useTls ? {secureTransport: 'on', allowHalfOpen: false} : undefined);
-            } catch {
-                if (!useTls) throw 0;
-                isCustom = true;
-                sock = await createConnect(hostname, port, {allowHalfOpen: false});
-            }
-        }
-        if (isCustom) {
-            tls = new TlsClient(sock, {serverName: proxyIsIp ? "" : hostname});
-            await tls.handshake();
-        }
-        return {sock, tls, isCustom};
+    const close = () => {
+        closed = true;
+        [ctrl, data, ctrlTls, dataTls].forEach(s => {try {s?.close()} catch {}});
+        [cr, cw].forEach(lock => {try {lock?.releaseLock()} catch {}});
     };
+    const openConn = socketOptions => {
+        const candidate = connect({hostname, port}, socketOptions);
+        return createConnect(hostname, port, socketOptions, candidate).catch(e => {
+            try {candidate.close()} catch {}
+            throw e;
+        });
+    };
+    const createConn = async () => {
+        let sock = null, tls = null, isCustom = false;
+        try {
+            if (useTls && proxyIsIp) {
+                isCustom = true;
+                sock = await openConn({allowHalfOpen: false});
+            } else {
+                try {
+                    sock = await openConn(useTls ? {secureTransport: 'on', allowHalfOpen: false} : undefined);
+                } catch {
+                    if (!useTls) throw 0;
+                    isCustom = true;
+                    sock = await openConn({allowHalfOpen: false});
+                }
+            }
+            if (isCustom) {
+                tls = new TlsClient(sock, {serverName: proxyIsIp ? "" : hostname});
+                await tls.handshake();
+            }
+            return {sock, tls, isCustom};
+        } catch (e) {
+            try {await tls?.close()} catch {}
+            try {sock?.close()} catch {}
+            throw e;
+        }
+    };
+    const newTid = () => crypto.getRandomValues(new Uint8Array(12));
+    const sameTid = (a, b) => a?.length === b?.length && a.every((v, i) => v === b[i]);
+    const tidKey = tid => {
+        let key = '';
+        for (let i = 0; i < tid.length; i++) key += tid[i].toString(16).padStart(2, '0');
+        return key;
+    };
+    const readMatching = async (rd, expectedTid, buffered = null, pending = null) => {
+        const expectedKey = tidKey(expectedTid), cached = pending?.get(expectedKey);
+        if (cached) {
+            pending.delete(expectedKey);
+            return [cached, buffered];
+        }
+        let extra = buffered;
+        for (; ;) {
+            const result = await readStun(rd, extra);
+            if (!result) throw 0;
+            const [msg, next] = result;
+            extra = next;
+            if (sameTid(msg.tid, expectedTid)) return [msg, extra];
+            if (pending) pending.set(tidKey(msg.tid), msg);
+        }
+    };
+    const ctrlPending = new Map();
+    const readControl = async expectedTid => {
+        const [msg, extra] = await readMatching(cr, expectedTid, ctrlExtra, ctrlPending);
+        ctrlExtra = extra;
+        return msg;
+    };
+    let cryptoKey = null, aa = [];
+    const sign = m => cryptoKey ? addIntegrity(m, cryptoKey) : m;
     try {
-        const cRes = await createConn();
+        const ctrlPromise = createConn();
+        dataPromise = createConn().then(res => {
+            data = res.sock;
+            dataTls = res.tls;
+            if (closed) {
+                try {res.tls?.close()} catch {}
+                try {res.sock?.close()} catch {}
+            }
+            return res;
+        });
+        dataPromise.catch(() => {});
+        const cRes = await ctrlPromise;
         ctrl = cRes.sock;
         ctrlTls = cRes.tls;
         const cIsCustom = cRes.isCustom;
-        const cw = cIsCustom ? {write: c => ctrlTls.write(c), releaseLock: () => {}} : ctrl.writable.getWriter();
-        const cr = cIsCustom ? {
+        cw = cIsCustom ? {write: c => ctrlTls.write(c), releaseLock: () => {}} : ctrl.writable.getWriter();
+        cr = cIsCustom ? {
             read: async () => {
                 const v = await ctrlTls.read();
                 return v ? {value: v, done: false} : {done: true};
             },
             releaseLock: () => {}
         } : ctrl.readable.getReader();
-        const tidBuf = new Uint8Array(12), tid = () => crypto.getRandomValues(tidBuf), tp = new Uint8Array([6, 0, 0, 0]);
-        await cw.write(stunMsg(0x003, tid(), [stunAttr(0x019, tp)]));
-        let [r, ex] = await readStun(cr);
+        let tid = newTid();
+        await cw.write(stunMsg(0x003, tid, [stunAttr(0x019, new Uint8Array([6, 0, 0, 0]))]));
+        let r = await readControl(tid);
         if (!r) throw 0;
-        let cryptoKey = null, aa = [];
-        const sign = m => cryptoKey ? addIntegrity(m, cryptoKey) : m;
-        const peer = stunAttr(0x012, xorPeer(targetIp, targetPort));
+        const targetAddress = await targetIp;
+        if (!targetAddress) throw 0;
+        const peer = stunAttr(0x012, xorPeer(targetAddress, targetPort));
+        let permissionTid = null, connectTid = null, pm = null, cm = null;
         if (r.type === 0x113 && username && parseErr(r.attrs[0x009]) === 401) {
             const realm = textDecoder.decode(r.attrs[0x014] ?? []), nonce = r.attrs[0x015] ?? [];
             const keyBytes = await md5(`${username}:${realm}:${password}`);
             cryptoKey = await crypto.subtle.importKey('raw', keyBytes, {name: 'HMAC', hash: 'SHA-1'}, false, ['sign']);
             aa = [stunAttr(0x006, textEncoder.encode(username)), stunAttr(0x014, textEncoder.encode(realm)), stunAttr(0x015, nonce)];
-            const [am, pm, cm] = await Promise.all([
-                sign(stunMsg(0x003, tid(), [stunAttr(0x019, tp), ...aa])),
-                sign(stunMsg(0x008, tid(), [peer, ...aa])),
-                sign(stunMsg(0x00A, tid(), [peer, ...aa]))
+            const allocateTid = newTid();
+            permissionTid = newTid(), connectTid = newTid();
+            const [am, permissionMsg, connectMsg] = await Promise.all([
+                sign(stunMsg(0x003, allocateTid, [stunAttr(0x019, new Uint8Array([6, 0, 0, 0])), ...aa])),
+                sign(stunMsg(0x008, permissionTid, [peer, ...aa])),
+                sign(stunMsg(0x00A, connectTid, [peer, ...aa]))
             ]);
+            pm = permissionMsg, cm = connectMsg;
             await cw.write(cat(am, pm, cm));
-            dataPromise = createConn();
-            [r, ex] = await readStun(cr, ex);
-            if (r?.type !== 0x103) throw 0;
+            r = await readControl(allocateTid);
         } else if (r.type === 0x103) {
-            const [pm, cm] = await Promise.all([
-                sign(stunMsg(0x008, tid(), [peer, ...aa])),
-                sign(stunMsg(0x00A, tid(), [peer, ...aa]))
+            permissionTid = newTid(), connectTid = newTid();
+            [pm, cm] = await Promise.all([
+                sign(stunMsg(0x008, permissionTid, [peer, ...aa])),
+                sign(stunMsg(0x00A, connectTid, [peer, ...aa]))
             ]);
             await cw.write(cat(pm, cm));
-            dataPromise = createConn();
         } else {throw 0}
-        [r, ex] = await readStun(cr, ex);
+        if (r?.type !== 0x103) throw 0;
+        r = await readControl(permissionTid);
         if (r?.type !== 0x108) throw 0;
-        [r] = await readStun(cr, ex);
+        r = await readControl(connectTid);
         if (r?.type !== 0x10A || !r.attrs[0x02A]) throw 0;
         const dRes = await dataPromise;
-        data = dRes.sock;
-        dataTls = dRes.tls;
         const dIsCustom = dRes.isCustom;
         const dw = dIsCustom ? {write: c => dataTls.write(c), releaseLock: () => {}} : data.writable.getWriter();
         const dr = dIsCustom ? {
@@ -1213,11 +1281,11 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, targetI
             },
             releaseLock: () => {}
         } : data.readable.getReader();
-        await dw.write(await sign(stunMsg(0x00B, tid(), [stunAttr(0x02A, r.attrs[0x02A]), ...aa])));
+        tid = newTid();
+        await dw.write(await sign(stunMsg(0x00B, tid, [stunAttr(0x02A, r.attrs[0x02A]), ...aa])));
         let extra;
-        [r, extra] = await readStun(dr);
+        [r, extra] = await readMatching(dr, tid);
         if (r?.type !== 0x10B) throw 0;
-        if (!cIsCustom) cr.releaseLock(), cw.releaseLock();
         if (!dIsCustom) dr.releaseLock(), dw.releaseLock();
         const tlsStream = dIsCustom ? tlsStreamAdapter(dataTls) : null;
         const readable = tlsStream ? tlsStream.readable : data.readable;
@@ -1549,29 +1617,35 @@ const strategyExecutorMap = new Map([
         const {nat64Auth, proxyAll} = param;
         return connectNat64(addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp);
     }],
-    [5, async ({addrType, port, addrBytes, isHttp}, param, _limit, _txt) => {
-        let targetIp = binaryAddrToString(addrType, addrBytes);
-        if (isHttp) addrType = addrTypeIs(targetIp);
-        if (addrType === 3) {
-            const answer = await concurrentDnsResolve(targetIp, 'A');
-            const aRecord = answer?.find(record => record.type === 1);
-            if (!aRecord) return null;
-            targetIp = aRecord.data;
-        } else if (addrType === 4) {return null}
-        return connectViaTurnProxy(param, targetIp, port);
+    [5, async (parsedRequest, param, _limit, _txt) => {
+        return connectViaTurnProxy(param, parsedRequest);
     }],
-    [7, async ({addrType, port, addrBytes, isHttp}, param, _limit, _txt) => {
-        let targetIp = binaryAddrToString(addrType, addrBytes);
-        if (isHttp) addrType = addrTypeIs(targetIp);
-        if (addrType === 3) {
-            const answer = await concurrentDnsResolve(targetIp, 'A');
-            const aRecord = answer?.find(record => record.type === 1);
-            if (!aRecord) return null;
-            targetIp = aRecord.data;
-        } else if (addrType === 4) {return null}
-        return connectViaTurnProxy(param, targetIp, port, true);
+    [7, async (parsedRequest, param, _limit, _txt) => {
+        return connectViaTurnProxy(param, parsedRequest, true);
     }]
 ]);
+const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
+    let settled = false, winner = null;
+    const sockets = new Set(), closeSocket = socket => {try {socket?.close?.()} catch {}};
+    const attempts = params.map(param => Promise.resolve().then(() => exec(parsedRequest, param, limit, txt)).then(socket => {
+        if (!socket) throw 0;
+        if (settled && socket !== winner) {
+            closeSocket(socket);
+            throw 0;
+        }
+        sockets.add(socket);
+        return socket;
+    }));
+    return Promise.any(attempts).then(socket => {
+        settled = true, winner = socket;
+        for (const other of sockets) if (other !== socket) closeSocket(other);
+        return socket;
+    }, err => {
+        settled = true;
+        for (const socket of sockets) closeSocket(socket);
+        throw err;
+    });
+};
 const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|gturns|turnsall|s5|socks|http|https|nat64|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
@@ -1633,7 +1707,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         try {
             const exec = strategyExecutorMap.get(list[i].type);
             const sub = (list[i]['concurrent'] && Array.isArray(list[i].param)) ? Math.max(1, Math.floor(concurrency / list[i].param.length)) : undefined;
-            const socket = await (list[i]['concurrent'] && Array.isArray(list[i].param) ? Promise.any(list[i].param.map(ip => exec(parsedRequest, ip, sub, list[i].txt))) : exec(parsedRequest, list[i].param, undefined, list[i].txt));
+            const socket = await (list[i]['concurrent'] && Array.isArray(list[i].param) ? concurrentStrategyExec(parsedRequest, list[i].param, exec, sub, list[i].txt) : exec(parsedRequest, list[i].param, undefined, list[i].txt));
             if (socket) return {socket, speed};
         } catch {}
     }

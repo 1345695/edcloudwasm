@@ -178,7 +178,7 @@ const 解析Stun = 料 => {
         屬[型] = 料.subarray(偏 + 4, 偏 + 4 + 長);
         偏 += 4 + 長 + (4 - 長 % 4) % 4;
     }
-    return {型: (料[0] << 8) | 料[1], 屬};
+    return {型: (料[0] << 8) | 料[1], 屬, 交易: 料.slice(8, 20)};
 };
 const 解錯 = 料 => 料?.length >= 4 ? (料[2] & 7) * 100 + 料[3] : 0;
 const 加整 = async (訊, 加鑰) => {
@@ -222,53 +222,111 @@ const 讀Stun = async (讀取器, 剩料) => {
     } catch {return null}
 };
 const md5 = async 字串 => new Uint8Array(await crypto.subtle.digest('MD5', 編碼.encode(字串)));
-const 經轉 = async ({主名, 埠, 用名, 密}, 目址, 目埠, 用安 = false) => {
+const 經轉 = async ({主名, 埠, 用名, 密}, {址類, 埠: 目埠, 址位}, 用安 = false) => {
+    let 目址 = 址字(址類, 址位);
+    if (址類 === 3) {
+        目址 = 址解(目址).catch(() => null);
+    } else if (址類 === 4) {return null}
     let 控槽 = null, 資槽 = null, 資諾 = null;
-    const 關 = () => [控槽, 資槽].forEach(插槽 => {try {插槽?.close()} catch {}});
-    const 建立連線 = () => 建連(主名, 埠, 用安 ? {secureTransport: 'on', allowHalfOpen: false} : undefined);
+    let 控寫 = null, 控讀 = null, 控餘 = null, 已關 = false;
+    const 關 = () => {
+        已關 = true;
+        [控槽, 資槽].forEach(插槽 => {try {插槽?.close()} catch {}});
+        [控讀, 控寫].forEach(鎖 => {try {鎖?.releaseLock()} catch {}});
+    };
+    const 建立連線 = () => {
+        const 連選 = 用安 ? {secureTransport: 'on', allowHalfOpen: false} : undefined;
+        const 插槽 = 建立雲端連線({hostname: 主名, port: 埠}, 連選);
+        return 建連(主名, 埠, 連選, 插槽).catch(錯 => {
+            try {插槽.close()} catch {}
+            throw 錯;
+        });
+    };
+    const 新交易 = () => crypto.getRandomValues(new Uint8Array(12));
+    const 同交易 = (甲, 乙) => 甲?.length === 乙?.length && 甲.every((值, 序) => 值 === 乙[序]);
+    const 交易鍵 = 交易 => {
+        let 鍵 = '';
+        for (let 序 = 0; 序 < 交易.length; 序++) 鍵 += 交易[序].toString(16).padStart(2, '0');
+        return 鍵;
+    };
+    const 讀匹 = async (讀取器, 預交易, 剩料 = null, 待回 = null) => {
+        const 預鍵 = 交易鍵(預交易), 暫訊 = 待回?.get(預鍵);
+        if (暫訊) {
+            待回.delete(預鍵);
+            return [暫訊, 剩料];
+        }
+        let 額料 = 剩料;
+        for (; ;) {
+            const 結果 = await 讀Stun(讀取器, 額料);
+            if (!結果) throw 0;
+            const [訊, 下一料] = 結果;
+            額料 = 下一料;
+            if (同交易(訊.交易, 預交易)) return [訊, 額料];
+            if (待回) 待回.set(交易鍵(訊.交易), 訊);
+        }
+    };
+    const 控待 = new Map();
+    const 讀控制 = async 預交易 => {
+        const [訊, 額料] = await 讀匹(控讀, 預交易, 控餘, 控待);
+        控餘 = 額料;
+        return 訊;
+    };
+    let 加鑰 = null, 認屬 = [];
+    const 簽 = 訊 => 加鑰 ? 加整(訊, 加鑰) : 訊;
     try {
-        控槽 = await 建立連線();
-        const 控寫 = 控槽.writable.getWriter(), 控讀 = 控槽.readable.getReader();
-        const 交緩 = new Uint8Array(12), 交易 = () => crypto.getRandomValues(交緩), 傳協 = new Uint8Array([6, 0, 0, 0]);
-        await 控寫.write(stun訊(0x003, 交易(), [stun屬(0x019, 傳協)]));
-        let [回, 剩餘] = await 讀Stun(控讀);
+        const 控諾 = 建立連線();
+        資諾 = 建立連線().then(插槽 => {
+            資槽 = 插槽;
+            if (已關) try {插槽.close()} catch {}
+            return 插槽;
+        });
+        資諾.catch(() => {});
+        控槽 = await 控諾;
+        控寫 = 控槽.writable.getWriter(), 控讀 = 控槽.readable.getReader();
+        let 交易 = 新交易();
+        await 控寫.write(stun訊(0x003, 交易, [stun屬(0x019, new Uint8Array([6, 0, 0, 0]))]));
+        let 回 = await 讀控制(交易);
         if (!回) throw 0;
-        let 加鑰 = null, 認屬 = [];
-        const 簽 = 訊 => 加鑰 ? 加整(訊, 加鑰) : 訊;
-        const 端 = stun屬(0x012, 異端(目址, 目埠));
+        const 目標址 = await 目址;
+        if (!目標址) throw 0;
+        const 端 = stun屬(0x012, 異端(目標址, 目埠));
+        let 許交易 = null, 連交易 = null, 許訊 = null, 連訊 = null;
         if (回.型 === 0x113 && 用名 && 解錯(回.屬[0x009]) === 401) {
             const 域 = 解碼.decode(回.屬[0x014] ?? []), 隨值 = 回.屬[0x015] ?? [];
             const 鑰位 = await md5(`${用名}:${域}:${密}`);
             加鑰 = await crypto.subtle.importKey('raw', 鑰位, {name: 'HMAC', hash: 'SHA-1'}, false, ['sign']);
             認屬 = [stun屬(0x006, 編碼.encode(用名)), stun屬(0x014, 編碼.encode(域)), stun屬(0x015, 隨值)];
-            const [分訊, 許訊, 連訊] = await Promise.all([
-                簽(stun訊(0x003, 交易(), [stun屬(0x019, 傳協), ...認屬])),
-                簽(stun訊(0x008, 交易(), [端, ...認屬])),
-                簽(stun訊(0x00A, 交易(), [端, ...認屬]))
+            const 分交易 = 新交易();
+            許交易 = 新交易(), 連交易 = 新交易();
+            const [分訊, 許訊值, 連訊值] = await Promise.all([
+                簽(stun訊(0x003, 分交易, [stun屬(0x019, new Uint8Array([6, 0, 0, 0])), ...認屬])),
+                簽(stun訊(0x008, 許交易, [端, ...認屬])),
+                簽(stun訊(0x00A, 連交易, [端, ...認屬]))
             ]);
+            許訊 = 許訊值, 連訊 = 連訊值;
             await 控寫.write(串位(分訊, 許訊, 連訊));
-            資諾 = 建立連線();
-            [回, 剩餘] = await 讀Stun(控讀, 剩餘);
-            if (回?.型 !== 0x103) throw 0;
+            回 = await 讀控制(分交易);
         } else if (回.型 === 0x103) {
-            const [許訊, 連訊] = await Promise.all([
-                簽(stun訊(0x008, 交易(), [端, ...認屬])),
-                簽(stun訊(0x00A, 交易(), [端, ...認屬]))
+            許交易 = 新交易(), 連交易 = 新交易();
+            [許訊, 連訊] = await Promise.all([
+                簽(stun訊(0x008, 許交易, [端, ...認屬])),
+                簽(stun訊(0x00A, 連交易, [端, ...認屬]))
             ]);
             await 控寫.write(串位(許訊, 連訊));
-            資諾 = 建立連線();
         } else {throw 0}
-        [回, 剩餘] = await 讀Stun(控讀, 剩餘);
+        if (回?.型 !== 0x103) throw 0;
+        回 = await 讀控制(許交易);
         if (回?.型 !== 0x108) throw 0;
-        [回] = await 讀Stun(控讀, 剩餘);
+        回 = await 讀控制(連交易);
         if (回?.型 !== 0x10A || !回.屬[0x02A]) throw 0;
-        資槽 = await 資諾;
+        await 資諾;
         const 資寫 = 資槽.writable.getWriter(), 資讀 = 資槽.readable.getReader();
-        await 資寫.write(await 簽(stun訊(0x00B, 交易(), [stun屬(0x02A, 回.屬[0x02A]), ...認屬])));
+        交易 = 新交易();
+        await 資寫.write(await 簽(stun訊(0x00B, 交易, [stun屬(0x02A, 回.屬[0x02A]), ...認屬])));
         let 額料;
-        [回, 額料] = await 讀Stun(資讀);
+        [回, 額料] = await 讀匹(資讀, 交易);
         if (回?.型 !== 0x10B) throw 0;
-        控讀.releaseLock(), 控寫.releaseLock(), 資讀.releaseLock(), 資寫.releaseLock();
+        資讀.releaseLock(), 資寫.releaseLock();
         return {readable: 資槽.readable, writable: 資槽.writable, close: 關, extra: 額料};
     } catch {
         關();
@@ -295,15 +353,13 @@ const 解請包 = (首塊) => {
 };
 const 解透包 = (首塊) => {
     for (let 序 = 0; 序 < 56; 序++) if (首塊[序] !== 雜位[序]) return null;
-    const 址類 = 首塊[59];
-    const 址訊 = 解址料(首塊, 60, 址類);
+    const 址類 = 首塊[59], 址訊 = 解址料(首塊, 60, 址類);
     if (!址訊) return null;
     const 埠 = (首塊[址訊.料偏] << 8) | 首塊[址訊.料偏 + 1];
     return {址類, 址位: 址訊.址位, 料偏: 址訊.料偏 + 4, 埠};
 };
 const 解影包 = (首塊) => {
-    const 址類 = 首塊[0];
-    const 址訊 = 解址料(首塊, 1, 址類);
+    const 址類 = 首塊[0], 址訊 = 解址料(首塊, 1, 址類);
     if (!址訊) return null;
     const 埠 = (首塊[址訊.料偏] << 8) | 首塊[址訊.料偏 + 1];
     return {址類, 址位: 址訊.址位, 料偏: 址訊.料偏 + 2, 埠};
@@ -377,21 +433,11 @@ const 策映 = new Map([
     [3, async (_解請, 參值, 文記) => {
         return 連代(參值, 文記);
     }],
-    [5, async ({址類, 埠, 址位}, 參值) => {
-        let 目址 = 址字(址類, 址位);
-        if (址類 === 3) {
-            目址 = await 址解(目址);
-            if (!目址) return null;
-        } else if (址類 === 4) {return null}
-        return 經轉(解認(參值), 目址, 埠);
+    [5, async (解請, 參值) => {
+        return 經轉(解認(參值), 解請);
     }],
-    [7, async ({址類, 埠, 址位}, 參值) => {
-        let 目址 = 址字(址類, 址位);
-        if (址類 === 3) {
-            目址 = await 址解(目址);
-            if (!目址) return null;
-        } else if (址類 === 4) {return null}
-        return 經轉(解認(參值), 目址, 埠, true);
+    [7, async (解請, 參值) => {
+        return 經轉(解認(參值), 解請, true);
     }]
 ]);
 const 網典 = new Map(), 網鍵 = new Array(網限);
@@ -420,7 +466,9 @@ const 建傳連 = async (解請, 請) => {
             const 加策 = (暫值, 型值, 文記) => {
                 if (!暫值) return;
                 const 分段 = decodeURIComponent(暫值).split(',');
-                for (let 序 = 0; 序 < 分段.length; 序++) if (分段[序]) 策列.push(文記 ? {型: 型值, 參: 分段[序], 文記} : {型: 型值, 參: 分段[序]});
+                for (let 序 = 0; 序 < 分段.length; 序++) {
+                    if (分段[序]) 策列.push(文記 ? {型: 型值, 參: 分段[序], 文記} : {型: 型值, 參: 分段[序]});
+                }
             };
             for (let 序 = 0; 序 < 代序.length; 序++) {
                 const 鍵序 = 代序[序];
@@ -502,71 +550,51 @@ const 手管 = async (讀流, 寫通, 關連, 速) => {
         }
     } catch {偏 = 0, 關連?.()} finally {正讀 = false, 刷出()}
 };
-const 建傳寫 = (寫函, 關連) => {
+const 建微隊 = (消函, 關連) => {
     const 佇列 = new Array(2048);
     let 佇首 = 0, 佇尾 = 0, 佇數 = 0, 聚緩 = null, 排空中 = false, 已關 = false;
-    const 關寫 = () => {
+    const 關隊 = () => {
         if (已關) return;
         已關 = true;
         for (let 序 = 0; 序 < 2048; 序++) 佇列[序] = null;
         關連?.();
     };
+    const 取出 = () => {
+        const 塊 = 佇列[佇首];
+        佇列[佇首] = null, 佇首 = (佇首 + 1) & 2047, 佇數--;
+        return 塊;
+    };
     const 排隊 = async () => {
         if (已關) return;
         try {
             while (佇數 > 0 && !已關) {
+                if (!入隊.寫函) {
+                    await 消函(取出());
+                    continue;
+                }
                 let 塊 = 佇列[佇首];
                 if (塊.byteLength >= 最塊) {
-                    佇列[佇首] = null, 佇首 = (佇首 + 1) & 2047, 佇數--;
-                    await 寫函.write(塊);
+                    await 入隊.寫函.write(取出());
                     continue;
                 }
                 let 聚長 = 0;
                 聚緩 ||= new Uint8Array(最塊);
-                while (佇數 > 0) {
-                    塊 = 佇列[佇首];
-                    if (聚長 + 塊.byteLength > 最塊) break;
-                    聚緩.set(塊, 聚長), 聚長 += 塊.byteLength;
-                    佇列[佇首] = null, 佇首 = (佇首 + 1) & 2047, 佇數--;
+                while (佇數 > 0 && 聚長 + 佇列[佇首].byteLength <= 最塊) {
+                    塊 = 取出(), 聚緩.set(塊, 聚長), 聚長 += 塊.byteLength;
                 }
-                if (聚長 > 0) await 寫函.write(聚緩.subarray(0, 聚長));
-            }
-        } catch {關寫()} finally {排空中 = false}
-    };
-    return 塊值 => {
-        if (已關) return;
-        const 料 = 塊值.constructor === Uint8Array ? 塊值 : new Uint8Array(塊值);
-        if (!料.byteLength) return;
-        if (佇數 === 2048) return 關寫();
-        佇列[佇尾] = 料, 佇尾 = (佇尾 + 1) & 2047, 佇數++;
-        if (!排空中) 排空中 = true, queueMicrotask(排隊);
-    };
-};
-const 建微隊 = (消函, 關連) => {
-    const 佇列 = new Array(1024);
-    let 佇首 = 0, 佇尾 = 0, 佇數 = 0, 排空中 = false, 已關 = false;
-    const 關隊 = () => {
-        if (已關) return;
-        已關 = true;
-        for (let 序 = 0; 序 < 1024; 序++) 佇列[序] = null;
-        關連?.();
-    };
-    const 排隊 = async () => {
-        if (已關) return;
-        try {
-            while (佇數 > 0 && !已關) {
-                const 塊 = 佇列[佇首];
-                佇列[佇首] = null, 佇首 = (佇首 + 1) & 1023, 佇數--;
-                await 消函(塊);
+                if (聚長 > 0) await 入隊.寫函.write(聚緩.subarray(0, 聚長));
             }
         } catch {關隊()} finally {排空中 = false}
     };
-    return 塊 => {
+    const 入隊 = 塊 => {
         if (已關) return;
-        if (佇數 === 1024) return 關隊();
-        佇列[佇尾] = 塊, 佇尾 = (佇尾 + 1) & 1023, 佇數++;
+        塊 = 塊.constructor === Uint8Array ? 塊 : new Uint8Array(塊);
+        if (入隊.寫函 && !塊.byteLength) return;
+        if (佇數 === 2048) return 關隊();
+        佇列[佇尾] = 塊, 佇尾 = (佇尾 + 1) & 2047, 佇數++;
         if (!排空中) 排空中 = true, queueMicrotask(排隊);
     };
+    return 入隊;
 };
 const 處網連 = async (網連, 請) => {
     const 參頭 = 請.headers.get('Referer');
@@ -579,16 +607,14 @@ const 處網連 = async (網連, 請) => {
     }
     // @ts-ignore
     const 早料 = 早頭 ? Uint8Array.fromBase64(早頭, {alphabet: 'base64url'}) : null;
-    let 傳寫, 處隊 = null, 解請, 傳槽;
+    let 處隊, 解請, 傳槽;
     const 關連 = () => {
         try {傳槽?.close()} catch {}
         try {網連.close(1011, 'WebSocket is closed')} catch {}
     };
     const 處 = 料塊 => {
         try {
-            if (傳寫) return 傳寫(料塊);
             return (async () => {
-                料塊 = 早料 ? 料塊 : new Uint8Array(料塊);
                 if (料塊.length > 58 && 料塊[56] === 13 && 料塊[57] === 10) {
                     解請 = 解透包(料塊);
                 } else if ((解請 = 解請包(料塊))) {
@@ -601,7 +627,7 @@ const 處網連 = async (網連, 請) => {
                 傳槽 = 傳果.連槽;
                 const 寫函 = 傳槽.writable.getWriter();
                 if (負料.byteLength) 寫函.write(負料);
-                傳寫 = 建傳寫(寫函, 關連);
+                處隊.寫函 = 寫函;
                 if (傳槽.extra?.length) 網連.send(傳槽.extra);
                 手管(傳槽.readable, 網連, 關連, 傳果.速);
             })();
@@ -609,7 +635,7 @@ const 處網連 = async (網連, 請) => {
     };
     處隊 = 建微隊(處, 關連);
     if (早料) 處隊(早料);
-    網連.addEventListener("message", 事 => (傳寫 || 處隊)(事.data));
+    網連.addEventListener("message", 事 => 處隊(事.data));
     網連.addEventListener("error", 關連);
     網連.addEventListener("close", 關連);
 };

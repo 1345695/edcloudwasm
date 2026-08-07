@@ -182,7 +182,7 @@ const parseStun = d => {
         attrs[t] = d.subarray(o + 4, o + 4 + l);
         o += 4 + l + (4 - l % 4) % 4;
     }
-    return {type: (d[0] << 8) | d[1], attrs};
+    return {type: (d[0] << 8) | d[1], attrs, tid: d.slice(8, 20)};
 };
 const parseErr = d => d?.length >= 4 ? (d[2] & 7) * 100 + d[3] : 0;
 const addIntegrity = async (m, cryptoKey) => {
@@ -226,91 +226,147 @@ const readStun = async (rd, buf) => {
     } catch {return null}
 };
 const md5 = async s => new Uint8Array(await crypto.subtle.digest('MD5', textEncoder.encode(s)));
-const connectViaTurnProxy = async ({hostname, port, username, password}, targetIp, targetPort, useTls = false) => {
+const connectViaTurnProxy = async ({hostname, port, username, password}, {addrType, port: targetPort, addrBytes}, useTls = false) => {
+    let targetIp = binaryAddrToString(addrType, addrBytes);
+    if (addrType === 3) {
+        targetIp = dnsAResult(targetIp).catch(() => null);
+    } else if (addrType === 4) {return null}
     let ctrl = null, data = null, dataPromise = null;
-    const close = () => [ctrl, data].forEach(s => {try {s?.close()} catch {}});
-    const createConn = () => createConnect(hostname, port, useTls ? {secureTransport: 'on', allowHalfOpen: false} : undefined);
+    let cw = null, cr = null, ctrlExtra = null, closed = false;
+    const close = () => {
+        closed = true;
+        [ctrl, data].forEach(s => {try {s?.close()} catch {}});
+        [cr, cw].forEach(lock => {try {lock?.releaseLock()} catch {}});
+    };
+    const createConn = () => {
+        const socketOptions = useTls ? {secureTransport: 'on', allowHalfOpen: false} : undefined;
+        const socket = connect({hostname, port}, socketOptions);
+        return createConnect(hostname, port, socketOptions, socket).catch(e => {
+            try {socket.close()} catch {}
+            throw e;
+        });
+    };
+    const newTid = () => crypto.getRandomValues(new Uint8Array(12));
+    const sameTid = (a, b) => a?.length === b?.length && a.every((v, i) => v === b[i]);
+    const tidKey = tid => {
+        let key = '';
+        for (let i = 0; i < tid.length; i++) key += tid[i].toString(16).padStart(2, '0');
+        return key;
+    };
+    const readMatching = async (rd, expectedTid, buffered = null, pending = null) => {
+        const expectedKey = tidKey(expectedTid), cached = pending?.get(expectedKey);
+        if (cached) {
+            pending.delete(expectedKey);
+            return [cached, buffered];
+        }
+        let extra = buffered;
+        for (; ;) {
+            const result = await readStun(rd, extra);
+            if (!result) throw 0;
+            const [msg, next] = result;
+            extra = next;
+            if (sameTid(msg.tid, expectedTid)) return [msg, extra];
+            if (pending) pending.set(tidKey(msg.tid), msg);
+        }
+    };
+    const ctrlPending = new Map();
+    const readControl = async expectedTid => {
+        const [msg, extra] = await readMatching(cr, expectedTid, ctrlExtra, ctrlPending);
+        ctrlExtra = extra;
+        return msg;
+    };
+    let cryptoKey = null, aa = [];
+    const sign = m => cryptoKey ? addIntegrity(m, cryptoKey) : m;
     try {
-        ctrl = await createConn();
-        const cw = ctrl.writable.getWriter(), cr = ctrl.readable.getReader();
-        const tidBuf = new Uint8Array(12), tid = () => crypto.getRandomValues(tidBuf), tp = new Uint8Array([6, 0, 0, 0]);
-        await cw.write(stunMsg(0x003, tid(), [stunAttr(0x019, tp)]));
-        let [r, ex] = await readStun(cr);
+        const ctrlPromise = createConn();
+        dataPromise = createConn().then(socket => {
+            data = socket;
+            if (closed) try {socket.close()} catch {}
+            return socket;
+        });
+        dataPromise.catch(() => {});
+        ctrl = await ctrlPromise;
+        cw = ctrl.writable.getWriter(), cr = ctrl.readable.getReader();
+        let tid = newTid();
+        await cw.write(stunMsg(0x003, tid, [stunAttr(0x019, new Uint8Array([6, 0, 0, 0]))]));
+        let r = await readControl(tid);
         if (!r) throw 0;
-        let cryptoKey = null, aa = [];
-        const sign = m => cryptoKey ? addIntegrity(m, cryptoKey) : m;
-        const peer = stunAttr(0x012, xorPeer(targetIp, targetPort));
+        const targetAddress = await targetIp;
+        if (!targetAddress) throw 0;
+        const peer = stunAttr(0x012, xorPeer(targetAddress, targetPort));
+        let permissionTid = null, connectTid = null, pm = null, cm = null;
         if (r.type === 0x113 && username && parseErr(r.attrs[0x009]) === 401) {
             const realm = textDecoder.decode(r.attrs[0x014] ?? []), nonce = r.attrs[0x015] ?? [];
             const keyBytes = await md5(`${username}:${realm}:${password}`);
             cryptoKey = await crypto.subtle.importKey('raw', keyBytes, {name: 'HMAC', hash: 'SHA-1'}, false, ['sign']);
             aa = [stunAttr(0x006, textEncoder.encode(username)), stunAttr(0x014, textEncoder.encode(realm)), stunAttr(0x015, nonce)];
-            const [am, pm, cm] = await Promise.all([
-                sign(stunMsg(0x003, tid(), [stunAttr(0x019, tp), ...aa])),
-                sign(stunMsg(0x008, tid(), [peer, ...aa])),
-                sign(stunMsg(0x00A, tid(), [peer, ...aa]))
+            const allocateTid = newTid();
+            permissionTid = newTid(), connectTid = newTid();
+            const [am, permissionMsg, connectMsg] = await Promise.all([
+                sign(stunMsg(0x003, allocateTid, [stunAttr(0x019, new Uint8Array([6, 0, 0, 0])), ...aa])),
+                sign(stunMsg(0x008, permissionTid, [peer, ...aa])),
+                sign(stunMsg(0x00A, connectTid, [peer, ...aa]))
             ]);
+            pm = permissionMsg, cm = connectMsg;
             await cw.write(cat(am, pm, cm));
-            dataPromise = createConn();
-            [r, ex] = await readStun(cr, ex);
-            if (r?.type !== 0x103) throw 0;
+            r = await readControl(allocateTid);
         } else if (r.type === 0x103) {
-            const [pm, cm] = await Promise.all([
-                sign(stunMsg(0x008, tid(), [peer, ...aa])),
-                sign(stunMsg(0x00A, tid(), [peer, ...aa]))
+            permissionTid = newTid(), connectTid = newTid();
+            [pm, cm] = await Promise.all([
+                sign(stunMsg(0x008, permissionTid, [peer, ...aa])),
+                sign(stunMsg(0x00A, connectTid, [peer, ...aa]))
             ]);
             await cw.write(cat(pm, cm));
-            dataPromise = createConn();
         } else {throw 0}
-        [r, ex] = await readStun(cr, ex);
+        if (r?.type !== 0x103) throw 0;
+        r = await readControl(permissionTid);
         if (r?.type !== 0x108) throw 0;
-        [r] = await readStun(cr, ex);
+        r = await readControl(connectTid);
         if (r?.type !== 0x10A || !r.attrs[0x02A]) throw 0;
-        data = await dataPromise;
+        await dataPromise;
         const dw = data.writable.getWriter(), dr = data.readable.getReader();
-        await dw.write(await sign(stunMsg(0x00B, tid(), [stunAttr(0x02A, r.attrs[0x02A]), ...aa])));
+        tid = newTid();
+        await dw.write(await sign(stunMsg(0x00B, tid, [stunAttr(0x02A, r.attrs[0x02A]), ...aa])));
         let extra;
-        [r, extra] = await readStun(dr);
+        [r, extra] = await readMatching(dr, tid);
         if (r?.type !== 0x10B) throw 0;
-        cr.releaseLock(), cw.releaseLock(), dr.releaseLock(), dw.releaseLock();
+        dr.releaseLock(), dw.releaseLock();
         return {readable: data.readable, writable: data.writable, close, extra};
     } catch {
         close();
         return null;
     }
 };
-const parseAddress = (buffer, offset, addrType) => {
-    const addressLength = addrType === 3 ? buffer[offset++] : addrType === 1 ? 4 : addrType === 4 ? 16 : null;
-    if (addressLength === null) return null;
-    const dataOffset = offset + addressLength;
-    if (dataOffset > buffer.length) return null;
-    const addrBytes = buffer.subarray(offset, dataOffset);
-    return {addrBytes, dataOffset};
+const parseAddress = (b, o, t) => {
+    const l = t === 3 ? b[o++] : t === 1 ? 4 : t === 4 ? 16 : null;
+    if (l === null) return null;
+    const d = o + l;
+    if (d > b.length) return null;
+    const a = b.subarray(o, d);
+    return {addrBytes: a, dataOffset: d};
 };
-const parseRequestData = (firstChunk) => {
-    for (let i = 0; i < 16; i++) if (firstChunk[i + 1] !== uuidBytes[i]) return null;
-    let offset = 19 + firstChunk[17];
-    const port = (firstChunk[offset] << 8) | firstChunk[offset + 1];
-    let addrType = firstChunk[offset + 2];
-    if (addrType !== 1) addrType += 1;
-    const addrInfo = parseAddress(firstChunk, offset + 3, addrType);
-    if (!addrInfo) return null;
-    return {addrType, addrBytes: addrInfo.addrBytes, dataOffset: addrInfo.dataOffset, port};
+const parseRequestData = b => {
+    for (let i = 0; i < 16; i++) if (b[i + 1] !== uuidBytes[i]) return null;
+    let o = 19 + b[17];
+    const p = (b[o] << 8) | b[o + 1];
+    let t = b[o + 2];
+    if (t !== 1) t += 1;
+    const a = parseAddress(b, o + 3, t);
+    if (!a) return null;
+    return {addrType: t, addrBytes: a.addrBytes, dataOffset: a.dataOffset, port: p};
 };
-const parseTransparent = (firstChunk) => {
-    for (let i = 0; i < 56; i++) if (firstChunk[i] !== hashBytes[i]) return null;
-    const addrType = firstChunk[59];
-    const addrInfo = parseAddress(firstChunk, 60, addrType);
-    if (!addrInfo) return null;
-    const port = (firstChunk[addrInfo.dataOffset] << 8) | firstChunk[addrInfo.dataOffset + 1];
-    return {addrType, addrBytes: addrInfo.addrBytes, dataOffset: addrInfo.dataOffset + 4, port};
+const parseTransparent = b => {
+    for (let i = 0; i < 56; i++) if (b[i] !== hashBytes[i]) return null;
+    const t = b[59], a = parseAddress(b, 60, t);
+    if (!a) return null;
+    const p = (b[a.dataOffset] << 8) | b[a.dataOffset + 1];
+    return {addrType: t, addrBytes: a.addrBytes, dataOffset: a.dataOffset + 4, port: p};
 };
-const parseShadow = (firstChunk) => {
-    const addrType = firstChunk[0];
-    const addrInfo = parseAddress(firstChunk, 1, addrType);
-    if (!addrInfo) return null;
-    const port = (firstChunk[addrInfo.dataOffset] << 8) | firstChunk[addrInfo.dataOffset + 1];
-    return {addrType, addrBytes: addrInfo.addrBytes, dataOffset: addrInfo.dataOffset + 2, port};
+const parseShadow = b => {
+    const t = b[0], a = parseAddress(b, 1, t);
+    if (!a) return null;
+    const p = (b[a.dataOffset] << 8) | b[a.dataOffset + 1];
+    return {addrType: t, addrBytes: a.addrBytes, dataOffset: a.dataOffset + 2, port: p};
 };
 const dohJsonOptions = {headers: {'Accept': 'application/dns-json'}}, dnsCache = new Map();
 const dnsResult = async (name, type, parse) => {
@@ -382,22 +438,12 @@ const strategyExecutorMap = new Map([
         return connectProxyIp(param, txt);
     }],
     // @ts-ignore
-    [5, async ({addrType, port, addrBytes}, param) => {
-        let targetIp = binaryAddrToString(addrType, addrBytes);
-        if (addrType === 3) {
-            targetIp = await dnsAResult(targetIp);
-            if (!targetIp) return null;
-        } else if (addrType === 4) {return null}
-        return connectViaTurnProxy(parseAuthString(param), targetIp, port);
+    [5, async (parsedRequest, param) => {
+        return connectViaTurnProxy(parseAuthString(param), parsedRequest);
     }],
     // @ts-ignore
-    [7, async ({addrType, port, addrBytes}, param) => {
-        let targetIp = binaryAddrToString(addrType, addrBytes);
-        if (addrType === 3) {
-            targetIp = await dnsAResult(targetIp);
-            if (!targetIp) return null;
-        } else if (addrType === 4) {return null}
-        return connectViaTurnProxy(parseAuthString(param), targetIp, port, true);
+    [7, async (parsedRequest, param) => {
+        return connectViaTurnProxy(parseAuthString(param), parsedRequest, true);
     }]
 ]);
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
@@ -508,71 +554,51 @@ const manualPipe = async (readable, writable, close, speed) => {
         }
     } catch {offset = 0, close?.()} finally {isReading = false, flushBuffer()}
 };
-const createBufferedTcpWriter = (tcpWriter, close) => {
+const createAsyncMicrotaskQueue = (consume, close) => {
     const queue = new Array(2048);
     let head = 0, tail = 0, size = 0, coalesceBuffer = null, drainActive = false, closed = false;
-    const closeWriter = () => {
+    const closeQueue = () => {
         if (closed) return;
         closed = true;
         for (let i = 0; i < 2048; i++) queue[i] = null;
         close?.();
     };
+    const shift = () => {
+        const chunk = queue[head];
+        queue[head] = null, head = (head + 1) & 2047, size--;
+        return chunk;
+    };
     const drainQueue = async () => {
         if (closed) return;
         try {
             while (size > 0 && !closed) {
+                if (!enqueue.writer) {
+                    await consume(shift());
+                    continue;
+                }
                 let chunk = queue[head];
                 if (chunk.byteLength >= maxChunkLen) {
-                    queue[head] = null, head = (head + 1) & 2047, size--;
-                    await tcpWriter.write(chunk);
+                    await enqueue.writer.write(shift());
                     continue;
                 }
                 let mergedLength = 0;
                 coalesceBuffer ||= new Uint8Array(maxChunkLen);
-                while (size > 0) {
-                    chunk = queue[head];
-                    if (mergedLength + chunk.byteLength > maxChunkLen) break;
-                    coalesceBuffer.set(chunk, mergedLength), mergedLength += chunk.byteLength;
-                    queue[head] = null, head = (head + 1) & 2047, size--;
+                while (size > 0 && mergedLength + queue[head].byteLength <= maxChunkLen) {
+                    chunk = shift(), coalesceBuffer.set(chunk, mergedLength), mergedLength += chunk.byteLength;
                 }
-                if (mergedLength > 0) await tcpWriter.write(coalesceBuffer.subarray(0, mergedLength));
-            }
-        } catch {closeWriter()} finally {drainActive = false}
-    };
-    return chunk => {
-        if (closed) return;
-        const data = chunk.constructor === Uint8Array ? chunk : new Uint8Array(chunk);
-        if (!data.byteLength) return;
-        if (size === 2048) return closeWriter();
-        queue[tail] = data, tail = (tail + 1) & 2047, size++;
-        if (!drainActive) drainActive = true, queueMicrotask(drainQueue);
-    };
-};
-const createAsyncMicrotaskQueue = (consume, close) => {
-    const queue = new Array(1024);
-    let head = 0, tail = 0, size = 0, drainActive = false, closed = false;
-    const closeQueue = () => {
-        if (closed) return;
-        closed = true;
-        for (let i = 0; i < 1024; i++) queue[i] = null;
-        close?.();
-    };
-    const drainQueue = async () => {
-        if (closed) return;
-        try {
-            while (size > 0 && !closed) {
-                const chunk = queue[head];
-                queue[head] = null, head = (head + 1) & 1023, size--;
-                await consume(chunk);
+                if (mergedLength > 0) await enqueue.writer.write(coalesceBuffer.subarray(0, mergedLength));
             }
         } catch {closeQueue()} finally {drainActive = false}
     };
-    return chunk => {
+    const enqueue = chunk => {
         if (closed) return;
-        if (size === 1024) return closeQueue();
-        queue[tail] = chunk, tail = (tail + 1) & 1023, size++;
+        chunk = chunk.constructor === Uint8Array ? chunk : new Uint8Array(chunk);
+        if (enqueue.writer && !chunk.byteLength) return;
+        if (size === 2048) return closeQueue();
+        queue[tail] = chunk, tail = (tail + 1) & 2047, size++;
         if (!drainActive) drainActive = true, queueMicrotask(drainQueue);
     };
+    return enqueue;
 };
 const handleWebSocketConn = async (webSocket, request) => {
     const refererHeader = request.headers.get('Referer');
@@ -585,16 +611,14 @@ const handleWebSocketConn = async (webSocket, request) => {
     }
     // @ts-ignore
     const earlyData = earlyDataHeader ? Uint8Array.fromBase64(earlyDataHeader, {alphabet: 'base64url'}) : null;
-    let tcpWrite, processingQueue = null, parsedRequest, tcpSocket;
+    let processingQueue, parsedRequest, tcpSocket;
     const close = () => {
         try {tcpSocket?.close()} catch {}
         try {webSocket.close(1011, 'WebSocket is closed')} catch {}
     };
     const process = chunk => {
         try {
-            if (tcpWrite) return tcpWrite(chunk);
             return (async () => {
-                chunk = earlyData ? chunk : new Uint8Array(chunk);
                 if (chunk.length > 58 && chunk[56] === 13 && chunk[57] === 10) {
                     parsedRequest = parseTransparent(chunk);
                 } else if ((parsedRequest = parseRequestData(chunk))) {
@@ -607,7 +631,7 @@ const handleWebSocketConn = async (webSocket, request) => {
                 tcpSocket = tcpResult.socket;
                 const tcpWriter = tcpSocket.writable.getWriter();
                 if (payload.byteLength) tcpWriter.write(payload);
-                tcpWrite = createBufferedTcpWriter(tcpWriter, close);
+                processingQueue.writer = tcpWriter;
                 if (tcpSocket.extra?.length) webSocket.send(tcpSocket.extra);
                 manualPipe(tcpSocket.readable, webSocket, close, tcpResult.speed);
             })();
@@ -615,7 +639,7 @@ const handleWebSocketConn = async (webSocket, request) => {
     };
     processingQueue = createAsyncMicrotaskQueue(process, close);
     if (earlyData) processingQueue(earlyData);
-    webSocket.addEventListener("message", event => (tcpWrite || processingQueue)(event.data));
+    webSocket.addEventListener("message", event => processingQueue(event.data));
     webSocket.addEventListener("error", close);
     webSocket.addEventListener("close", close);
 };

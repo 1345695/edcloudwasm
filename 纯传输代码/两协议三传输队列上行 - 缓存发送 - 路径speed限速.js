@@ -442,71 +442,51 @@ const manualPipe = async (readable, writable, close, speed) => {
         }
     } catch {offset = 0, close?.()} finally {isReading = false, flushBuffer()}
 };
-const createBufferedTcpWriter = (tcpWriter, close) => {
+const createAsyncMicrotaskQueue = (consume, close) => {
     const queue = new Array(2048);
     let head = 0, tail = 0, size = 0, coalesceBuffer = null, drainActive = false, closed = false;
-    const closeWriter = () => {
+    const closeQueue = () => {
         if (closed) return;
         closed = true;
         for (let i = 0; i < 2048; i++) queue[i] = null;
         close?.();
     };
+    const shift = () => {
+        const chunk = queue[head];
+        queue[head] = null, head = (head + 1) & 2047, size--;
+        return chunk;
+    };
     const drainQueue = async () => {
         if (closed) return;
         try {
             while (size > 0 && !closed) {
+                if (!enqueue.writer) {
+                    await consume(shift());
+                    continue;
+                }
                 let chunk = queue[head];
                 if (chunk.byteLength >= maxChunkLen) {
-                    queue[head] = null, head = (head + 1) & 2047, size--;
-                    await tcpWriter.write(chunk);
+                    await enqueue.writer.write(shift());
                     continue;
                 }
                 let mergedLength = 0;
                 coalesceBuffer ||= new Uint8Array(maxChunkLen);
-                while (size > 0) {
-                    chunk = queue[head];
-                    if (mergedLength + chunk.byteLength > maxChunkLen) break;
-                    coalesceBuffer.set(chunk, mergedLength), mergedLength += chunk.byteLength;
-                    queue[head] = null, head = (head + 1) & 2047, size--;
+                while (size > 0 && mergedLength + queue[head].byteLength <= maxChunkLen) {
+                    chunk = shift(), coalesceBuffer.set(chunk, mergedLength), mergedLength += chunk.byteLength;
                 }
-                if (mergedLength > 0) await tcpWriter.write(coalesceBuffer.subarray(0, mergedLength));
-            }
-        } catch {closeWriter()} finally {drainActive = false}
-    };
-    return chunk => {
-        if (closed) return;
-        const data = chunk.constructor === Uint8Array ? chunk : new Uint8Array(chunk);
-        if (!data.byteLength) return;
-        if (size === 2048) return closeWriter();
-        queue[tail] = data, tail = (tail + 1) & 2047, size++;
-        if (!drainActive) drainActive = true, queueMicrotask(drainQueue);
-    };
-};
-const createAsyncMicrotaskQueue = (consume, close) => {
-    const queue = new Array(1024);
-    let head = 0, tail = 0, size = 0, drainActive = false, closed = false;
-    const closeQueue = () => {
-        if (closed) return;
-        closed = true;
-        for (let i = 0; i < 1024; i++) queue[i] = null;
-        close?.();
-    };
-    const drainQueue = async () => {
-        if (closed) return;
-        try {
-            while (size > 0 && !closed) {
-                const chunk = queue[head];
-                queue[head] = null, head = (head + 1) & 1023, size--;
-                await consume(chunk);
+                if (mergedLength > 0) await enqueue.writer.write(coalesceBuffer.subarray(0, mergedLength));
             }
         } catch {closeQueue()} finally {drainActive = false}
     };
-    return chunk => {
+    const enqueue = chunk => {
         if (closed) return;
-        if (size === 1024) return closeQueue();
-        queue[tail] = chunk, tail = (tail + 1) & 1023, size++;
+        chunk = chunk.constructor === Uint8Array ? chunk : new Uint8Array(chunk);
+        if (enqueue.writer && !chunk.byteLength) return;
+        if (size === 2048) return closeQueue();
+        queue[tail] = chunk, tail = (tail + 1) & 2047, size++;
         if (!drainActive) drainActive = true, queueMicrotask(drainQueue);
     };
+    return enqueue;
 };
 const handleSession = async (chunk, state, request, writable, close, isEarlyData = false) => {
     state.needMore = false;
@@ -525,27 +505,31 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         state.tcpSocket = tcpResult.socket;
         const tcpWriter = state.tcpSocket.writable.getWriter();
         if (payload.byteLength) tcpWriter.write(payload);
-        state.tcpWriter = createBufferedTcpWriter(tcpWriter, close);
+        state.tcpWriter ||= createAsyncMicrotaskQueue(null, close);
+        state.tcpWriter.writer = tcpWriter;
         manualPipe(state.tcpSocket.readable, writable, close, tcpResult.speed);
     }
 };
 const handleWebSocketConn = async (webSocket, request) => {
-    const protocolHeader = request.headers.get('sec-websocket-protocol');
+    const refererHeader = request.headers.get('Referer');
+    const protocolHeader = refererHeader || request.headers.get('sec-websocket-protocol');
+    let earlyDataHeader = null;
+    if (refererHeader) {
+        earlyDataHeader = protocolHeader.slice(request.headers.get('host').length);
+    } else if (protocolHeader) {
+        earlyDataHeader = protocolHeader;
+    }
     // @ts-ignore
-    const earlyData = protocolHeader ? Uint8Array.fromBase64(protocolHeader, {alphabet: 'base64url'}) : null;
+    const earlyData = earlyDataHeader ? Uint8Array.fromBase64(earlyDataHeader, {alphabet: 'base64url'}) : null;
     const state = {tcpWriter: null, tcpSocket: null};
-    let processingQueue = null;
     const close = () => {
         try {state.tcpSocket?.close()} catch {}
         try {webSocket.close(1011, 'WebSocket is closed')} catch {}
     };
-    const process = (chunk) => {
-        if (state.tcpWriter) return state.tcpWriter(chunk);
-        return handleSession(earlyData ? chunk : new Uint8Array(chunk), state, request, webSocket, close, earlyData !== null);
-    };
-    processingQueue = createAsyncMicrotaskQueue(process, close);
+    const processingQueue = createAsyncMicrotaskQueue(chunk => handleSession(chunk, state, request, webSocket, close, earlyData !== null), close);
+    state.tcpWriter = processingQueue;
     if (earlyData) processingQueue(earlyData);
-    webSocket.addEventListener("message", event => (state.tcpWriter || processingQueue)(event.data));
+    webSocket.addEventListener("message", event => processingQueue(event.data));
     webSocket.addEventListener("error", close);
     webSocket.addEventListener("close", close);
 };
@@ -563,6 +547,7 @@ const handleGrpcPost = async (request, reader, buffer, used) => {
             const writable = {
                 send: (chunk) => {
                     const len = chunk.byteLength;
+                    if (!len) return;
                     let varintLen = 1;
                     for (let v = len >>> 7; v; v >>>= 7) varintLen++;
                     const totalPayloadLen = 1 + varintLen + len;
