@@ -992,31 +992,55 @@ const {TlsClient} = (() => {
     }
     return {TlsClient};
 })();
-const tlsStreamAdapter = (tls, initial = new Uint8Array(0)) => ({
-    readable: {
-        getReader() {
-            let leftOver = initial;
-            return {
-                async read(view) {
-                    if (leftOver.length) {
-                        const len = Math.min(leftOver.length, view.byteLength);
-                        view.set(leftOver.subarray(0, len));
-                        leftOver = leftOver.subarray(len);
-                        return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
-                    }
-                    const data = await tls.read();
-                    if (!data) return {done: true};
-                    const len = Math.min(data.length, view.byteLength);
-                    view.set(data.subarray(0, len));
-                    if (data.length > len) leftOver = data.subarray(len);
-                    return {done: false, value: new Uint8Array(view.buffer, view.byteOffset, len)};
-                },
-                releaseLock() {}
-            };
+const tlsStreamAdapter = (tls, initial = new Uint8Array(0)) => {
+    let leftOver = initial, reading = null, closed = false;
+    const readNext = async () => {
+        if (leftOver?.byteLength) {
+            const data = leftOver;
+            leftOver = null;
+            return data;
         }
-    },
-    writable: new WritableStream({write(chunk) {return tls.write(chunk)}, close() {tls.close()}, abort() {tls.close()}})
-});
+        return await tls.read();
+    };
+    const readable = new ReadableStream({
+        type: 'bytes',
+        async pull(controller) {
+            if (closed) return controller.close();
+            if (!reading) {
+                reading = readNext().finally(() => {reading = null});
+            }
+            const data = await reading;
+            if (!data?.byteLength) {
+                const request = controller.byobRequest;
+                closed = true;
+                controller.close();
+                if (request) request.respond(0);
+                return;
+            }
+            const value = data instanceof Uint8Array ? data : new Uint8Array(data);
+            const request = controller.byobRequest;
+            if (request) {
+                const view = request.view;
+                const len = Math.min(value.byteLength, view.byteLength);
+                view.set(value.subarray(0, len));
+                if (len < value.byteLength) leftOver = value.subarray(len);
+                request.respond(len);
+            } else {
+                controller.enqueue(value);
+            }
+        },
+        cancel() {
+            closed = true;
+            try {tls.close()} catch {}
+        }
+    });
+    const writable = new WritableStream({
+        write(chunk) {return tls.write(chunk)},
+        close() {closed = true; return tls.close()},
+        abort() {closed = true; return tls.close()}
+    });
+    return {readable, writable};
+};
 const staticHeaders = `User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\r\nProxy-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n`;
 const encodedStaticHeaders = textEncoder.encode(staticHeaders);
 const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addrBytes, limit, useTls = false) => {
