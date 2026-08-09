@@ -491,10 +491,7 @@ const createAsyncMicrotaskQueue = (consume, close) => {
 const handleSession = async (chunk, state, request, writable, close, isEarlyData = false) => {
     state.needMore = false;
     const parsed = parseProtocolChunk(chunk);
-    if (parsed.handshake) {
-        const deferVlessHandshake = state.xhttpPipeTo && parsed.success && parsed.handshake.byteLength === 2 && parsed.handshake[0] !== 5;
-        deferVlessHandshake ? state.xhttpResponsePrefixes = [parsed.handshake.slice()] : writable.send(parsed.handshake);
-    }
+    if (parsed.handshake) writable.send(parsed.handshake);
     if (!parsed.success) return parsed.needMore ? (state.needMore = true) : close();
     const parsedRequest = parsed.parsedRequest;
     const payload = chunk.subarray(parsedRequest.dataOffset);
@@ -507,7 +504,7 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         if (!tcpResult) return close();
         state.tcpSocket = tcpResult.socket;
         if (state.xhttpPipeTo) {
-            state.xhttpPayload = payload.slice();
+            state.xhttpPayload = payload;
             return;
         }
         const tcpWriter = state.tcpSocket.writable.getWriter();
@@ -541,44 +538,25 @@ const handleWebSocketConn = async (webSocket, request) => {
     webSocket.addEventListener("close", close);
 };
 const xhttpHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
-const pipeToWithPrefix = async (readable, writable, prefixes, options) => {
-    const writer = writable.getWriter();
-    try {
-        const v = prefixes.filter(p => p?.byteLength);
-        if (v.length === 1) {
-            await writer.write(v[0]);
-        } else if (v.length > 1) {
-            let l = 0, o = 0;
-            for (const p of v) l += p.byteLength;
-            const b = new Uint8Array(l);
-            for (const p of v) b.set(p, o), o += p.byteLength;
-            await writer.write(b);
-        }
-    } catch (e) {
-        try {await writer.abort(e)} catch {}
-        throw e;
-    } finally {try {writer.releaseLock()} catch {}}
-    await readable.pipeTo(writable, options);
-};
 const handleXhttpPost = async (request) => {
     const reader = request.body?.getReader({mode: 'byob'});
     if (!reader) return new Response(null, {status: 400});
     const state = {tcpWriter: null, tcpSocket: null, needMore: false, xhttpPipeTo: true};
     const bridge = new IdentityTransformStream(), responseWriter = bridge.writable.getWriter();
     let xhttpBuffer = new ArrayBuffer(8192), used = 0, uploadAbort = null;
-    let responseWriterReleased = false;
+    let writerReleased = false;
     const close = () => {
-        try {uploadAbort?.abort(new Error('xhttp connection closed'))} catch {}
+        uploadAbort?.abort();
         try {state.tcpSocket?.close()} catch {}
-        if (!responseWriterReleased) {
-            responseWriterReleased = true;
+        if (!writerReleased) {
+            writerReleased = true;
             responseWriter.abort().catch(() => {});
-            try {responseWriter.releaseLock()} catch {}
+            responseWriter.releaseLock();
         }
     };
     const writable = {
         send: (chunk) => {
-            if (!chunk?.byteLength || responseWriterReleased) return;
+            if (!chunk?.byteLength || writerReleased) return;
             return responseWriter.write(chunk);
         }
     };
@@ -588,29 +566,19 @@ const handleXhttpPost = async (request) => {
                 const payload = new Uint8Array(xhttpBuffer, 0, used);
                 state.tcpWriter ? await state.tcpWriter(payload) : (state.needMore = false, await handleSession(payload, state, request, writable, close));
                 if (state.tcpSocket) {
-                    try {reader.releaseLock()} catch {}
+                    reader.releaseLock();
                     uploadAbort = new AbortController();
-                    if (!responseWriterReleased) {
-                        responseWriterReleased = true;
-                        try {responseWriter.releaseLock()} catch {}
+                    if (!writerReleased) {
+                        writerReleased = true;
+                        responseWriter.releaseLock();
                     }
-                    const downloadPrefixes = state.xhttpResponsePrefixes ? [...state.xhttpResponsePrefixes] : [];
-                    if (state.tcpSocket.extra?.byteLength) downloadPrefixes.push(state.tcpSocket.extra);
-                    const upload = pipeToWithPrefix(
-                        request.body,
-                        state.tcpSocket.writable,
-                        [state.xhttpPayload],
-                        {signal: uploadAbort.signal}
-                    ).catch(close);
-                    const download = pipeToWithPrefix(
-                        state.tcpSocket.readable,
-                        bridge.writable,
-                        downloadPrefixes
-                    ).catch(close);
-                    void download.finally(() => {
-                        if (!uploadAbort.signal.aborted) uploadAbort.abort(new Error('xhttp response settled'));
-                    }).catch(() => {});
-                    void Promise.allSettled([upload, download]).then(close);
+                    if (state.xhttpPayload?.byteLength) {
+                        const writer = state.tcpSocket.writable.getWriter();
+                        writer.write(state.xhttpPayload);
+                        writer.releaseLock();
+                    }
+                    request.body.pipeTo(state.tcpSocket.writable, {signal: uploadAbort.signal}).catch(close);
+                    state.tcpSocket.readable.pipeTo(bridge.writable).catch(close);
                     return;
                 }
                 if (!state.needMore) {
