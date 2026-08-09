@@ -1,6 +1,6 @@
 /*
 // 代码基本都抄的CM和和AK大佬和天书大佬的项目，在此感谢各位大佬的无私奉献。
-// 支持xhttp和websocket和grpc传输，trojan和vless和ss和socks5和http协议入站,ss协议无密码，ss和socks5和http协议只能纯手搓，socks5协议不能在路径使用ed=2560参数
+// 支持xhttp和websocket，trojan和vless和ss和socks5和http协议入站,ss协议无密码，ss和socks5和http协议只能纯手搓，socks5协议不能在路径使用ed=2560参数
 // ws模式的vless导入链接：vless://{这里写uuid}@104.16.40.11:2053?encryption=none&security=tls&sni={这里写域名}&alpn=http%2F1.1&fp=chrome&type=ws&host={这里写域名}#vless
 // ws模式的trojan导入链接：trojan://{这里写密码}@104.16.40.11:2053?security=tls&sni={这里写域名}&alpn=http%2F1.1&fp=chrome&allowInsecure=1&type=ws&host={这里写域名}#trojan
 // xhttp模式的vless导入链接：vless://{这里写uuid}@104.16.40.11:2053?encryption=none&security=tls&sni={这里写域名}&alpn=h2&fp=chrome&allowInsecure=1&type=xhttp&host={这里写域名}&mode=stream-one#vless-xhttp
@@ -2224,7 +2224,10 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
     let parsedRequest, payload, isSs = false;
     const ssEnabled = !state.disableSsAead && !!ssAeadPassword && !state.tcpWriter && state.socks5State === 0;
     const parsed = parseProtocolChunk(chunk, state.socks5State);
-    parsed.handshake && writable.send(parsed.handshake);
+    if (parsed.handshake) {
+        const deferVlessHandshake = state.xhttpPipeTo && parsed.success && parsed.handshake.byteLength === 2 && parsed.handshake[0] !== 5;
+        deferVlessHandshake ? state.xhttpResponsePrefixes = [parsed.handshake.slice()] : writable.send(parsed.handshake);
+    }
     if (!parsed.success) {
         if (parsed.nextSocksState > 0) return state.socks5State = parsed.nextSocksState;
         if (allowNeedMore && parsed.needMore) return state.needMore = true;
@@ -2270,6 +2273,10 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         const tcpResult = await establishTcpConnection(parsedRequest, request);
         if (!tcpResult) return close();
         state.tcpSocket = tcpResult.socket;
+        if (state.xhttpPipeTo) {
+            state.xhttpPayload = payload.slice();
+            return;
+        }
         const tcpWriter = state.tcpSocket.writable.getWriter();
         const bufferedTcpWriter = createBufferedTcpWriter(tcpWriter, close);
         if (payload.byteLength) tcpWriter.write(payload);
@@ -2325,121 +2332,93 @@ const handleWebSocketConn = async (webSocket, request) => {
     webSocket.addEventListener("error", close);
     webSocket.addEventListener("close", close);
 };
-const grpcHeaders = {'Content-Type': 'application/grpc', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
 const xhttpHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
-const handleGrpcPost = async (request, reader, buffer, used) => {
-    const state = {socks5State: 0, tcpWriter: null, tcpSocket: null, ssInbound: null, ssOutbound: null, ssResponseSalt: null};
-    let close = () => {};
-    return new Response(new ReadableStream({
-        start(controller) {
-            close = () => {
-                try {state.tcpSocket?.close()} catch {}
-                try {controller.close()} catch {}
-            };
-            const writable = {
-                send: (chunk) => {
-                    const len = chunk.byteLength;
-                    if (!len) return;
-                    let varintLen = 1;
-                    for (let v = len >>> 7; v; v >>>= 7) varintLen++;
-                    const totalPayloadLen = 1 + varintLen + len;
-                    const grpcFrame = new Uint8Array(5 + totalPayloadLen);
-                    grpcFrame[0] = 0;
-                    grpcFrame[1] = totalPayloadLen >>> 24;
-                    grpcFrame[2] = totalPayloadLen >>> 16;
-                    grpcFrame[3] = totalPayloadLen >>> 8;
-                    grpcFrame[4] = totalPayloadLen;
-                    grpcFrame[5] = 0x0A;
-                    let p = 6, v = len;
-                    while (v > 127) {
-                        grpcFrame[p++] = (v & 0x7F) | 0x80;
-                        v >>>= 7;
-                    }
-                    grpcFrame[p++] = v;
-                    grpcFrame.set(chunk, p);
-                    controller.enqueue(grpcFrame);
-                }
-            };
-            (async () => {
-                let grpcBuffer = new ArrayBuffer(73728), offset = 0;
-                if (used) new Uint8Array(grpcBuffer, 0, used).set(buffer);
-                while (true) {
-                    const bufToProcess = new Uint8Array(grpcBuffer, 0, used), bufLen = bufToProcess.byteLength;
-                    offset = 0;
-                    while (bufLen - offset >= 5) {
-                        const grpcLen = ((bufToProcess[offset + 1] << 24) >>> 0) | (bufToProcess[offset + 2] << 16) | (bufToProcess[offset + 3] << 8) | bufToProcess[offset + 4];
-                        const frameSize = 5 + grpcLen;
-                        if (bufLen - offset >= frameSize) {
-                            const grpcData = bufToProcess.slice(offset + 5, offset + frameSize);
-                            offset += frameSize;
-                            let p = grpcData[0] === 0x0A ? 1 : 0;
-                            while (p && grpcData[p++] & 0x80) ;
-                            const payload = p === 0 ? grpcData : grpcData.subarray(p);
-                            state.tcpWriter ? await state.tcpWriter(payload) : await handleSession(payload, state, request, writable, close);
-                        } else {break}
-                    }
-                    if (offset < bufLen) {
-                        used = bufLen - offset;
-                        new Uint8Array(grpcBuffer).copyWithin(0, offset, bufLen);
-                    } else {used = 0}
-                    const {done, value} = await reader.read(new Uint8Array(grpcBuffer, used, 8192));
-                    if (done) break;
-                    grpcBuffer = value.buffer;
-                    used += value.byteLength;
-                }
-            })().catch(close);
+const toUint8Array = value => value?.constructor === Uint8Array ? value : new Uint8Array(value);
+const pipeToWithPrefix = async (readable, writable, prefixes, options) => {
+    const writer = writable.getWriter();
+    try {
+        for (const prefix of prefixes) {
+            if (!prefix?.byteLength) continue;
+            await writer.write(toUint8Array(prefix));
         }
-    }), {headers: grpcHeaders});
+    } catch (error) {
+        try {await writer.abort(error)} catch {}
+        throw error;
+    } finally {try {writer.releaseLock()} catch {}}
+    await readable.pipeTo(writable, options);
 };
-const handleXhttpPost = async (request, reader, xhttpBuffer, used) => {
-    const state = {socks5State: 0, tcpWriter: null, tcpSocket: null, needMore: false, allowNeedMore: true, disableSsAead: true};
-    let close = () => {};
-    return new Response(new ReadableStream({
-        start(controller) {
-            close = () => {
-                try {state.tcpSocket?.close()} catch {}
-                try {controller.close()} catch {}
-            };
-            const writable = {send: (chunk) => controller.enqueue(chunk)};
-            (async () => {
-                while (true) {
-                    if (used > 0) {
-                        const payload = new Uint8Array(xhttpBuffer, 0, used);
-                        state.tcpWriter ? await state.tcpWriter(payload) : (state.needMore = false, await handleSession(payload, state, request, writable, close));
-                        if (!state.needMore) {
-                            used = 0;
-                            continue;
-                        }
-                    }
-                    const {done, value} = await reader.read(new Uint8Array(xhttpBuffer, used, used === 0 ? 8192 : 4096));
-                    if (done) break;
-                    xhttpBuffer = value.buffer;
-                    used += value.byteLength;
-                }
-            })().catch(close);
+const handleXhttpPost = async (request) => {
+    const reader = request.body?.getReader({mode: 'byob'});
+    const state = {socks5State: 0, tcpWriter: null, tcpSocket: null, needMore: false, allowNeedMore: true, disableSsAead: true, xhttpPipeTo: true};
+    const bridge = new IdentityTransformStream(), responseWriter = bridge.writable.getWriter();
+    let xhttpBuffer = new ArrayBuffer(8192), used = 0, uploadAbort = null;
+    let responseWriterReleased = false, responseWriteQueue = Promise.resolve();
+    const close = () => {
+        try {uploadAbort?.abort(new Error('xhttp connection closed'))} catch {}
+        try {state.tcpSocket?.close()} catch {}
+        if (!responseWriterReleased) {
+            responseWriterReleased = true;
+            responseWriter.abort().catch(() => {});
+            try {responseWriter.releaseLock()} catch {}
         }
-    }), {headers: xhttpHeaders});
+    };
+    const writable = {
+        send: (chunk) => {
+            if (!chunk?.byteLength || responseWriterReleased) return;
+            responseWriteQueue = responseWriteQueue.then(() => responseWriter.write(toUint8Array(chunk))).catch(close);
+            return responseWriteQueue;
+        }
+    };
+    (async () => {
+        while (true) {
+            if (used > 0) {
+                const payload = new Uint8Array(xhttpBuffer, 0, used);
+                state.tcpWriter ? await state.tcpWriter(payload) : (state.needMore = false, await handleSession(payload, state, request, writable, close));
+                if (state.tcpSocket) {
+                    try {reader.releaseLock()} catch {}
+                    const tcpSocket = state.tcpSocket;
+                    const firstPayload = state.xhttpPayload;
+                    uploadAbort = new AbortController();
+                    await responseWriteQueue;
+                    if (!responseWriterReleased) {
+                        responseWriterReleased = true;
+                        try {responseWriter.releaseLock()} catch {}
+                    }
+                    const downloadPrefixes = state.xhttpResponsePrefixes ? [...state.xhttpResponsePrefixes] : [];
+                    if (tcpSocket.extra?.byteLength) downloadPrefixes.push(tcpSocket.extra);
+                    const upload = pipeToWithPrefix(
+                        request.body,
+                        tcpSocket.writable,
+                        [firstPayload],
+                        {signal: uploadAbort.signal}
+                    ).catch(close);
+                    const download = pipeToWithPrefix(
+                        tcpSocket.readable,
+                        bridge.writable,
+                        downloadPrefixes
+                    ).catch(close);
+                    void download.finally(() => {
+                        if (!uploadAbort.signal.aborted) uploadAbort.abort(new Error('xhttp response settled'));
+                    }).catch(() => {});
+                    void Promise.allSettled([upload, download]).then(close);
+                    return;
+                }
+                if (!state.needMore) {
+                    used = 0;
+                    continue;
+                }
+            }
+            const {done, value} = await reader.read(new Uint8Array(xhttpBuffer, used, used === 0 ? 8192 : 4096));
+            if (done) return close();
+            xhttpBuffer = value.buffer;
+            used += value.byteLength;
+        }
+    })().catch(close);
+    return new Response(bridge.readable, {headers: xhttpHeaders});
 };
 export default {
     async fetch(request) {
-        if (request.method === 'POST' && request.headers.get('content-type') === 'application/grpc-web') {
-            const reader = request.body?.getReader({mode: 'byob'});
-            if (!reader) return new Response(null, {status: 400});
-            let postBuffer = new ArrayBuffer(8192), used = 0, buffer = new Uint8Array();
-            while (buffer.length === 0 || (buffer[0] === 0 && buffer.length < 6)) {
-                const {done, value} = await reader.read(new Uint8Array(postBuffer, used, 4096));
-                if (done || !value?.byteLength) break;
-                postBuffer = value.buffer;
-                used += value.byteLength;
-                buffer = new Uint8Array(postBuffer, 0, used);
-            }
-            if (buffer.length === 0) {
-                reader.releaseLock();
-                return new Response(null, {status: 400});
-            }
-            const isGrpc = !request.headers.get('Referer') && buffer.length >= 6 && buffer[0] === 0 && buffer[5] === 0x0A;
-            return isGrpc ? handleGrpcPost(request, reader, buffer, used) : handleXhttpPost(request, reader, postBuffer, used);
-        }
+        if (request.method === 'POST' && request.headers.get('content-type') === 'application/grpc-web') return handleXhttpPost(request);
         if (request.headers.get('Upgrade') === 'websocket') {
             const {0: clientSocket, 1: webSocket} = new WebSocketPair();
             // @ts-ignore

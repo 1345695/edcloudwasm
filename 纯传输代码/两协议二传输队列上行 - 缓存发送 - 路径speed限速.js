@@ -533,74 +533,12 @@ const handleWebSocketConn = async (webSocket, request) => {
     webSocket.addEventListener("error", close);
     webSocket.addEventListener("close", close);
 };
-const grpcHeaders = {'Content-Type': 'application/grpc', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
 const xhttpHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
-const handleGrpcPost = async (request, reader, buffer, used) => {
-    const state = {tcpWriter: null, tcpSocket: null};
-    let close = () => {};
-    return new Response(new ReadableStream({
-        start(controller) {
-            close = () => {
-                try {state.tcpSocket?.close()} catch {}
-                try {controller.close()} catch {}
-            };
-            const writable = {
-                send: (chunk) => {
-                    const len = chunk.byteLength;
-                    if (!len) return;
-                    let varintLen = 1;
-                    for (let v = len >>> 7; v; v >>>= 7) varintLen++;
-                    const totalPayloadLen = 1 + varintLen + len;
-                    const grpcFrame = new Uint8Array(5 + totalPayloadLen);
-                    grpcFrame[0] = 0;
-                    grpcFrame[1] = totalPayloadLen >>> 24;
-                    grpcFrame[2] = totalPayloadLen >>> 16;
-                    grpcFrame[3] = totalPayloadLen >>> 8;
-                    grpcFrame[4] = totalPayloadLen;
-                    grpcFrame[5] = 0x0A;
-                    let p = 6, v = len;
-                    while (v > 127) {
-                        grpcFrame[p++] = (v & 0x7F) | 0x80;
-                        v >>>= 7;
-                    }
-                    grpcFrame[p++] = v;
-                    grpcFrame.set(chunk, p);
-                    controller.enqueue(grpcFrame);
-                }
-            };
-            (async () => {
-                let grpcBuffer = new ArrayBuffer(73728), offset = 0;
-                if (used) new Uint8Array(grpcBuffer, 0, used).set(buffer);
-                while (true) {
-                    const bufToProcess = new Uint8Array(grpcBuffer, 0, used), bufLen = bufToProcess.byteLength;
-                    offset = 0;
-                    while (bufLen - offset >= 5) {
-                        const grpcLen = ((bufToProcess[offset + 1] << 24) >>> 0) | (bufToProcess[offset + 2] << 16) | (bufToProcess[offset + 3] << 8) | bufToProcess[offset + 4];
-                        const frameSize = 5 + grpcLen;
-                        if (bufLen - offset >= frameSize) {
-                            const grpcData = bufToProcess.slice(offset + 5, offset + frameSize);
-                            offset += frameSize;
-                            let p = grpcData[0] === 0x0A ? 1 : 0;
-                            while (p && grpcData[p++] & 0x80) ;
-                            const payload = p === 0 ? grpcData : grpcData.subarray(p);
-                            state.tcpWriter ? await state.tcpWriter(payload) : await handleSession(payload, state, request, writable, close);
-                        } else {break}
-                    }
-                    if (offset < bufLen) {
-                        used = bufLen - offset;
-                        new Uint8Array(grpcBuffer).copyWithin(0, offset, bufLen);
-                    } else {used = 0}
-                    const {done, value} = await reader.read(new Uint8Array(grpcBuffer, used, 8192));
-                    if (done) break;
-                    grpcBuffer = value.buffer;
-                    used += value.byteLength;
-                }
-            })().catch(close);
-        }
-    }), {headers: grpcHeaders});
-};
-const handleXhttpPost = async (request, reader, xhttpBuffer, used) => {
+const handleXhttpPost = async (request) => {
+    const reader = request.body?.getReader({mode: 'byob'});
+    if (!reader) return new Response(null, {status: 400});
     const state = {tcpWriter: null, tcpSocket: null, needMore: false};
+    let xhttpBuffer = new ArrayBuffer(8192), used = 0;
     let close = () => {};
     return new Response(new ReadableStream({
         start(controller) {
@@ -630,24 +568,7 @@ const handleXhttpPost = async (request, reader, xhttpBuffer, used) => {
 };
 export default {
     async fetch(request) {
-        if (request.method === 'POST' && request.headers.get('content-type') === 'application/grpc-web') {
-            const reader = request.body?.getReader({mode: 'byob'});
-            if (!reader) return new Response(null, {status: 400});
-            let postBuffer = new ArrayBuffer(8192), used = 0, buffer = new Uint8Array();
-            while (buffer.length === 0 || (buffer[0] === 0 && buffer.length < 6)) {
-                const {done, value} = await reader.read(new Uint8Array(postBuffer, used, 4096));
-                if (done || !value?.byteLength) break;
-                postBuffer = value.buffer;
-                used += value.byteLength;
-                buffer = new Uint8Array(postBuffer, 0, used);
-            }
-            if (buffer.length === 0) {
-                reader.releaseLock();
-                return new Response(null, {status: 400});
-            }
-            const isGrpc = !request.headers.get('Referer') && buffer.length >= 6 && buffer[0] === 0 && buffer[5] === 0x0A;
-            return isGrpc ? handleGrpcPost(request, reader, buffer, used) : handleXhttpPost(request, reader, postBuffer, used);
-        }
+        if (request.method === 'POST' && request.headers.get('content-type') === 'application/grpc-web') return handleXhttpPost(request);
         if (request.headers.get('Upgrade') === 'websocket') {
             const {0: clientSocket, 1: webSocket} = new WebSocketPair();
             // @ts-ignore

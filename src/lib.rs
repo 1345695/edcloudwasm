@@ -116,26 +116,22 @@ pub unsafe extern "C" fn setSocks5AuthLenWasm(len: i32) {
 // 节点生成与字符串常量 (明文极速版)
 // ==========================================
 
-static TEMPLATES: [&[u8]; 13] = [
+static TEMPLATES: [&[u8]; 9] = [
     b"vless://{{UUID}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&path={{PATH}}&encryption=none&security=tls&fp=chrome&alpn=http%2F1.1&insecure=0&allowInsecure=0&type=ws#ws-vless-{{name}}",
     b"vless://{{UUID}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&path={{PATH}}&encryption=none&security=tls&fp=chrome&allowInsecure=0&type=ws&ech={{ECHDNS}}&alpn=http%2F1.1&insecure=0#[ECH]-ws-vless-{{name}}",
     b"vless://{{UUID}}@{{IP}}:{{port}}?host={{HOST}}&path={{PATH}}&encryption=none&security=none&type=ws#ws-notls-vless-{{name}}",
     b"vless://{{UUID}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&path={{PATH}}&encryption=none&security=tls&fp=chrome&alpn=h2&insecure=0&allowInsecure=0&type=xhttp&headerType=none&mode=stream-one&extra=%7B%22xPaddingObfsMode%22%3Atrue%2C%22xPaddingMethod%22%3A%22tokenish%22%2C%22xPaddingHeader%22%3A%22referer%22%2C%22xPaddingKey%22%3A%22key%22%7D#xhttp-vless-{{name}}",
     b"vless://{{UUID}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&path={{PATH}}&encryption=none&security=tls&fp=chrome&type=xhttp&headerType=none&ech={{ECHDNS}}&alpn=h2&insecure=0&allowInsecure=0&mode=stream-one&extra=%7B%22xPaddingObfsMode%22%3Atrue%2C%22xPaddingMethod%22%3A%22tokenish%22%2C%22xPaddingHeader%22%3A%22referer%22%2C%22xPaddingKey%22%3A%22key%22%7D#[ECH]-xhttp-vless-{{name}}",
-    b"vless://{{UUID}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&serviceName={{PATH}}&encryption=none&security=tls&fp=chrome&alpn=h2&type=grpc&mode=gun&insecure=0&allowInsecure=0#grpc-vless-{{name}}",
-    b"vless://{{UUID}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&serviceName={{PATH}}&encryption=none&security=tls&fp=chrome&alpn=h2&type=grpc&mode=gun&ech={{ECHDNS}}&allowInsecure=0&insecure=0#[ECH]-grpc-vless-{{name}}",
     b"trojan://{{PASSWORD}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&path={{PATH}}&security=tls&fp=chrome&alpn=http%2F1.1&insecure=0&allowInsecure=0&type=ws#ws-trojan-{{name}}",
     b"trojan://{{PASSWORD}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&path={{PATH}}&security=tls&fp=chrome&allowInsecure=0&type=ws&ech={{ECHDNS}}&alpn=http%2F1.1&insecure=0#[ECH]-ws-trojan-{{name}}",
     b"trojan://{{PASSWORD}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&path={{PATH}}&encryption=none&security=tls&fp=chrome&alpn=h2&insecure=0&allowInsecure=0&type=xhttp&headerType=none&mode=stream-one&extra=%7B%22xPaddingObfsMode%22%3Atrue%2C%22xPaddingMethod%22%3A%22tokenish%22%2C%22xPaddingHeader%22%3A%22referer%22%2C%22xPaddingKey%22%3A%22key%22%7D#xhttp-trojan-{{name}}",
     b"trojan://{{PASSWORD}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&path={{PATH}}&encryption=none&security=tls&fp=chrome&type=xhttp&headerType=none&ech={{ECHDNS}}&alpn=h2&insecure=0&allowInsecure=0&mode=stream-one&extra=%7B%22xPaddingObfsMode%22%3Atrue%2C%22xPaddingMethod%22%3A%22tokenish%22%2C%22xPaddingHeader%22%3A%22referer%22%2C%22xPaddingKey%22%3A%22key%22%7D#[ECH]-xhttp-trojan-{{name}}",
-    b"trojan://{{PASSWORD}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&serviceName={{PATH}}&security=tls&fp=chrome&alpn=h2&type=grpc&mode=gun&insecure=0&allowInsecure=0#grpc-trojan-{{name}}",
-    b"trojan://{{PASSWORD}}@{{IP}}:{{port}}?sni={{HOST}}&host={{HOST}}&serviceName={{PATH}}&security=tls&fp=chrome&alpn=h2&type=grpc&mode=gun&ech={{ECHDNS}}&allowInsecure=0&insecure=0#[ECH]-grpc-trojan-{{name}}",
 ];
 
 /// 获取节点模板字符串并写入 COMMON_BUF
 #[no_mangle]
 pub unsafe extern "C" fn getTemplateWasm(index: i32) -> i32 {
-    if (0..13).contains(&index) {
+    if (0..9).contains(&index) {
         let t = TEMPLATES.get_unchecked(index as usize);
         core::ptr::copy_nonoverlapping(t.as_ptr(), COMMON_BUF.as_mut_ptr(), t.len());
         return t.len() as i32;
@@ -143,7 +139,7 @@ pub unsafe extern "C" fn getTemplateWasm(index: i32) -> i32 {
     0
 }
 
-static SECRET_STRINGS: [&[u8]; 20] = [
+static SECRET_STRINGS: [&[u8]; 19] = [
     b"https://SUBAPI.cmliussss.net",
     b"https://raw.githubusercontent.com/cmliu/ACL4SSR/main/Clash/config/ACL4SSR_Online_Mini_MultiMode_CF.ini",
     b"edgetunnel",
@@ -163,13 +159,12 @@ static SECRET_STRINGS: [&[u8]; 20] = [
     b"meta",
     b"MyCloudflareNodes",
     b"subconverter",
-    b"Subconverter",
 ];
 
 /// 获取内置密钥/常量字符串并写入 COMMON_BUF
 #[no_mangle]
 pub unsafe extern "C" fn getSecretStringWasm(index: i32) -> i32 {
-    if (0..20).contains(&index) {
+    if (0..19).contains(&index) {
         let s = SECRET_STRINGS.get_unchecked(index as usize);
         core::ptr::copy_nonoverlapping(s.as_ptr(), COMMON_BUF.as_mut_ptr(), s.len());
         return s.len() as i32;
