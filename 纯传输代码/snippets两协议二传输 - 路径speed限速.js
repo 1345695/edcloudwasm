@@ -486,17 +486,22 @@ const handleWebSocketConn = async (webSocket, request) => {
     webSocket.addEventListener("close", close);
 };
 const xhttpHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
-const toUint8Array = value => value?.constructor === Uint8Array ? value : new Uint8Array(value);
 const pipeToWithPrefix = async (readable, writable, prefixes, options) => {
     const writer = writable.getWriter();
     try {
-        for (const prefix of prefixes) {
-            if (!prefix?.byteLength) continue;
-            await writer.write(toUint8Array(prefix));
+        const v = prefixes.filter(p => p?.byteLength);
+        if (v.length === 1) {
+            await writer.write(v[0]);
+        } else if (v.length > 1) {
+            let l = 0, o = 0;
+            for (const p of v) l += p.byteLength;
+            const b = new Uint8Array(l);
+            for (const p of v) b.set(p, o), o += p.byteLength;
+            await writer.write(b);
         }
-    } catch (error) {
-        try {await writer.abort(error)} catch {}
-        throw error;
+    } catch (e) {
+        try {await writer.abort(e)} catch {}
+        throw e;
     } finally {try {writer.releaseLock()} catch {}}
     await readable.pipeTo(writable, options);
 };
@@ -506,7 +511,7 @@ const handleXhttpPost = async (request) => {
     const state = {tcpWriter: null, tcpSocket: null, needMore: false, xhttpPipeTo: true};
     const bridge = new IdentityTransformStream(), responseWriter = bridge.writable.getWriter();
     let xhttpBuffer = new ArrayBuffer(8192), used = 0, uploadAbort = null;
-    let responseWriterReleased = false, responseWriteQueue = Promise.resolve();
+    let responseWriterReleased = false;
     const close = () => {
         try {uploadAbort?.abort(new Error('xhttp connection closed'))} catch {}
         try {state.tcpSocket?.close()} catch {}
@@ -519,8 +524,7 @@ const handleXhttpPost = async (request) => {
     const writable = {
         send: (chunk) => {
             if (!chunk?.byteLength || responseWriterReleased) return;
-            responseWriteQueue = responseWriteQueue.then(() => responseWriter.write(toUint8Array(chunk))).catch(close);
-            return responseWriteQueue;
+            return responseWriter.write(chunk);
         }
     };
     (async () => {
@@ -530,24 +534,21 @@ const handleXhttpPost = async (request) => {
                 state.tcpWriter ? await state.tcpWriter(payload) : (state.needMore = false, await handleSession(payload, state, request, writable, close));
                 if (state.tcpSocket) {
                     try {reader.releaseLock()} catch {}
-                    const tcpSocket = state.tcpSocket;
-                    const firstPayload = state.xhttpPayload;
                     uploadAbort = new AbortController();
-                    await responseWriteQueue;
                     if (!responseWriterReleased) {
                         responseWriterReleased = true;
                         try {responseWriter.releaseLock()} catch {}
                     }
                     const downloadPrefixes = state.xhttpResponsePrefixes ? [...state.xhttpResponsePrefixes] : [];
-                    if (tcpSocket.extra?.byteLength) downloadPrefixes.push(tcpSocket.extra);
+                    if (state.tcpSocket.extra?.byteLength) downloadPrefixes.push(state.tcpSocket.extra);
                     const upload = pipeToWithPrefix(
                         request.body,
-                        tcpSocket.writable,
-                        [firstPayload],
+                        state.tcpSocket.writable,
+                        [state.xhttpPayload],
                         {signal: uploadAbort.signal}
                     ).catch(close);
                     const download = pipeToWithPrefix(
-                        tcpSocket.readable,
+                        state.tcpSocket.readable,
                         bridge.writable,
                         downloadPrefixes
                     ).catch(close);
