@@ -74,32 +74,164 @@ const parseAuthString = (authParam) => {
     const [hostname, port] = parseHostPort(hostStr, 1080);
     return {username, password, hostname, port};
 };
+const isIPv4 = (str) => {
+    const len = str.length;
+    if (len > 15 || len < 7) return false;
+    let part = 0, dots = 0, partLen = 0, head = 0;
+    for (let i = 0; i < len; i++) {
+        const charCode = str.charCodeAt(i);
+        if (charCode === 46) {
+            if (dots === 3 || partLen === 0 || (partLen > 1 && head === 48)) return false;
+            dots++, part = 0, partLen = 0;
+        } else {
+            const digit = (charCode - 48) >>> 0;
+            if (digit > 9) return false;
+            if (partLen === 0) head = charCode;
+            partLen++, part = part * 10 + digit;
+            if (part > 255 || partLen > 3) return false;
+        }
+    }
+    return dots === 3 && partLen > 0 && !(partLen > 1 && head === 48);
+};
+const addrTypeIs = hostname => {
+    const char0 = hostname.charCodeAt(0);
+    return (char0 - 48) >>> 0 > 9 ? (char0 === 91 ? 4 : 3) : isIPv4(hostname) ? 1 : 3;
+};
 const createConnect = (hostname, port, socketOptions, socket = connect({hostname, port}, socketOptions)) => socket.opened.then(() => socket);
-const concurrentConnect = (hostname, port, limit = concurrency, socketOptions) => {
-    if (limit === 1) return createConnect(hostname, port, socketOptions);
-    let settled = false, winner = null;
-    const sockets = new Array(limit);
-    const closeSocket = socket => {try {socket?.close()} catch {}};
-    const attempts = Array.from({length: limit}, (_, i) => {
-        const socket = connect({hostname, port}, socketOptions);
-        sockets[i] = socket;
-        return createConnect(hostname, port, socketOptions, socket).then(openedSocket => {
-            if (settled && openedSocket !== winner) closeSocket(openedSocket);
-            return openedSocket;
-        });
+const dohJsonOptions = {headers: {'Accept': 'application/dns-json'}}, dohHeaders = {'content-type': 'application/dns-message'};
+const concurrentDnsResolve = async (hostname, recordType) => {
+    const dnsResult = await Promise.any(dohNatEndpoints.map(endpoint =>
+        fetch(`${endpoint}?name=${hostname}&type=${recordType}`, dohJsonOptions).then(response => {
+            if (!response.ok) throw new Error();
+            return response.json();
+        })
+    ));
+    const answer = dnsResult.Answer || dnsResult.answer;
+    if (!answer || answer.length === 0) return null;
+    return answer;
+};
+const dnsConnectCache = new Map();
+const setDnsConnectCache = (hostname, result) => {
+    if (!dnsConnectCache.has(hostname) && dnsConnectCache.size >= 5000) {
+        let oldestKey, oldestExpires = Infinity;
+        for (const [key, value] of dnsConnectCache) if (value.expires < oldestExpires) oldestKey = key, oldestExpires = value.expires;
+        if (oldestKey !== undefined) dnsConnectCache.delete(oldestKey);
+    }
+    dnsConnectCache.set(hostname, result);
+};
+const dnsConnectResolve = async hostname => {
+    const parseAnswer = (answer, type, wrap) => {
+        const records = [], now = Date.now();
+        let ttl = 0;
+        if (answer) for (let i = 0, len = answer.length; i < len; i++) {
+            const record = answer[i];
+            if (record.type === type && record.data) {
+                records.push(wrap ? `[${record.data}]` : record.data);
+                if (record.TTL > 0) ttl = ttl ? Math.min(ttl, record.TTL * 1000) : record.TTL * 1000;
+            }
+        }
+        return {records, expires: now + Math.min(ttl || 60000, 300000)};
+    };
+    const [aaaa, a] = await Promise.all([
+        concurrentDnsResolve(hostname, 'AAAA').catch(() => null),
+        concurrentDnsResolve(hostname, 'A').catch(() => null)
+    ]);
+    const ipv6 = parseAnswer(aaaa, 28, true), ipv4 = parseAnswer(a, 1, false);
+    const hasRecord = ipv6.records.length || ipv4.records.length;
+    const result = {ipv6: ipv6.records, ipv4: ipv4.records, expires: hasRecord ? Math.max(ipv6.expires, ipv4.expires) : Date.now() + 5000, refreshing: null};
+    setDnsConnectCache(hostname, result);
+    return result;
+};
+const getDnsConnectCache = hostname => {
+    let cached = dnsConnectCache.get(hostname);
+    const now = Date.now();
+    if (!cached) return dnsConnectResolve(hostname);
+    if (cached.expires > now) return cached;
+    cached.refreshing ||= dnsConnectResolve(hostname).catch(() => null).finally(() => {
+        const current = dnsConnectCache.get(hostname);
+        if (current) current.refreshing = null;
     });
-    return Promise.any(attempts).then(socket => {
-        settled = true, winner = socket;
-        for (const other of sockets) if (other !== socket) closeSocket(other);
-        return socket;
-    }, err => {
-        settled = true;
-        for (const socket of sockets) closeSocket(socket);
-        throw err;
+    return cached;
+};
+const getTxtDnsCache = txtdns => {
+    const key = `TXT:${txtdns}`;
+    let cached = dnsConnectCache.get(key);
+    const now = Date.now(), resolve = async () => {
+        const answer = await concurrentDnsResolve(txtdns, 'TXT').catch(() => null);
+        const result = {answer, expires: Date.now() + (answer ? 60000 : 5000), refreshing: null};
+        setDnsConnectCache(key, result);
+        return result;
+    };
+    if (!cached) return resolve();
+    if (cached.expires > now) return cached;
+    cached.refreshing ||= resolve().catch(() => null).finally(() => {
+        const current = dnsConnectCache.get(key);
+        if (current) current.refreshing = null;
+    });
+    return cached.answer ? cached : cached.refreshing;
+};
+const shuffleDnsCandidates = (ipv6 = [], ipv4 = [], hostname) => {
+    const shuffle = records => {
+        records = records.slice();
+        for (let i = records.length - 1; i > 0; i--) {
+            const j = (Math.random() * (i + 1)) | 0;
+            [records[i], records[j]] = [records[j], records[i]];
+        }
+        return records;
+    };
+    return [...shuffle(ipv6), ...shuffle(ipv4), hostname];
+};
+const connectCandidates = (candidates, port, limit, socketOptions) => {
+    if (candidates.length === 1) {
+        if (limit === 1) return createConnect(candidates[0], port, socketOptions);
+        candidates = Array(limit).fill(candidates[0]);
+    }
+    let settled = false, winner = null;
+    let next = 0, failed = 0;
+    const sockets = new Set();
+    const closeSocket = socket => {try {socket?.close()} catch {}};
+    return new Promise((resolve, reject) => {
+        const launch = () => {
+            if (settled) return;
+            if (failed >= candidates.length) {
+                settled = true;
+                for (const socket of sockets) closeSocket(socket);
+                return reject(new Error());
+            }
+            while (sockets.size < limit && next < candidates.length) {
+                const candidate = candidates[next++], socket = connect({hostname: candidate, port}, socketOptions);
+                sockets.add(socket);
+                createConnect(candidate, port, socketOptions, socket).then(openedSocket => {
+                    if (settled) return closeSocket(openedSocket);
+                    settled = true, winner = openedSocket;
+                    for (const other of sockets) if (other !== winner) closeSocket(other);
+                    resolve(openedSocket);
+                }, () => {
+                    sockets.delete(socket), closeSocket(socket), failed++;
+                    launch();
+                });
+            }
+        };
+        launch();
     });
 };
+const concurrentConnect = async (hostname, port, limit = concurrency, socketOptions, addrType) => {
+    if (addrType !== 3) return connectCandidates([hostname], port, limit, socketOptions);
+    const cached = await getDnsConnectCache(hostname);
+    const candidates = shuffleDnsCandidates(cached.ipv6, cached.ipv4, hostname);
+    try {
+        return await connectCandidates(candidates, port, limit, socketOptions);
+    } catch (err) {
+        const refreshed = cached.refreshing ? await cached.refreshing : null;
+        if (refreshed && refreshed !== cached) {
+            const refreshedCandidates = shuffleDnsCandidates(refreshed.ipv6, refreshed.ipv4, hostname);
+            return connectCandidates(refreshedCandidates, port, limit, socketOptions);
+        }
+        throw err;
+    }
+};
 const connectViaSocksProxy = async (targetAddrType, targetPortNum, socksAuth, addrBytes, limit) => {
-    const socksSocket = await concurrentConnect(socksAuth.hostname, socksAuth.port, limit);
+    const socksSocket = await concurrentConnect(socksAuth.hostname, socksAuth.port, limit, undefined, addrTypeIs(socksAuth.hostname));
     const writer = socksSocket.writable.getWriter();
     const reader = socksSocket.readable.getReader();
     await writer.write(socks5Init);
@@ -130,7 +262,7 @@ const encodedStaticHeaders = textEncoder.encode(staticHeaders);
 const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addrBytes, limit, useTls = false) => {
     const {username, password, hostname, port} = httpAuth;
     const connectOptions = useTls ? {secureTransport: 'on', allowHalfOpen: false} : undefined;
-    const proxySocket = await concurrentConnect(hostname, port, limit, connectOptions);
+    const proxySocket = await concurrentConnect(hostname, port, limit, connectOptions, addrTypeIs(hostname));
     const writer = proxySocket.writable.getWriter();
     const httpHost = binaryAddrToString(targetAddrType, addrBytes);
     let dynamicHeaders = `CONNECT ${httpHost}:${targetPortNum} HTTP/1.1\r\nHost: ${httpHost}:${targetPortNum}\r\n`;
@@ -223,18 +355,6 @@ const parseProtocolChunk = (chunk) => {
     }
     return len < 56 ? (result.needMore = true, result) : result;
 };
-const dohJsonOptions = {headers: {'Accept': 'application/dns-json'}}, dohHeaders = {'content-type': 'application/dns-message'};
-const concurrentDnsResolve = async (hostname, recordType) => {
-    const dnsResult = await Promise.any(dohNatEndpoints.map(endpoint =>
-        fetch(`${endpoint}?name=${hostname}&type=${recordType}`, dohJsonOptions).then(response => {
-            if (!response.ok) throw new Error();
-            return response.json();
-        })
-    ));
-    const answer = dnsResult.Answer || dnsResult.answer;
-    if (!answer || answer.length === 0) return null;
-    return answer;
-};
 const dohDnsHandler = async (payload) => {
     if (payload.byteLength < 2) return null;
     const dnsQueryData = payload.subarray(2);
@@ -252,7 +372,7 @@ const dohDnsHandler = async (payload) => {
     return packet;
 };
 const txtdnsResult = async (txtdns) => {
-    const answer = await concurrentDnsResolve(txtdns, 'TXT');
+    const answer = (await getTxtDnsCache(txtdns))?.answer;
     if (!answer) return null;
     let txtData, i = 0, len = answer.length;
     for (; i < len; i++) if (answer[i].type === 16) {
@@ -303,12 +423,12 @@ const connectProxyIp = async (param, limit, txt) => {
         });
     }
     const [host, port] = parseHostPort(param, 443);
-    return concurrentConnect(host, port, limit);
+    return concurrentConnect(host, port, limit, undefined, addrTypeIs(host));
 };
 const strategyExecutorMap = new Map([
-    [0, async ({addrType, port, addrBytes}, _param, _limit, _txt) => {
+    [0, async ({addrType, port, addrBytes}, _param, limit, _txt) => {
         const hostname = binaryAddrToString(addrType, addrBytes);
-        return concurrentConnect(hostname, port);
+        return concurrentConnect(hostname, port, limit, undefined, addrType);
     }],
     [1, async ({addrType, port, addrBytes}, param, limit, _txt) => {
         return connectViaSocksProxy(addrType, port, param, addrBytes, limit);
@@ -323,6 +443,28 @@ const strategyExecutorMap = new Map([
         return connectProxyIp(param, limit, txt);
     }]
 ]);
+const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
+    let settled = false, winner = null;
+    const sockets = new Set(), closeSocket = socket => {try {socket?.close?.()} catch {}};
+    const attempts = params.map(param => Promise.resolve().then(() => exec(parsedRequest, param, limit, txt)).then(socket => {
+        if (!socket) throw 0;
+        if (settled && socket !== winner) {
+            closeSocket(socket);
+            throw 0;
+        }
+        sockets.add(socket);
+        return socket;
+    }));
+    return Promise.any(attempts).then(socket => {
+        settled = true, winner = socket;
+        for (const other of sockets) if (other !== socket) closeSocket(other);
+        return socket;
+    }, err => {
+        settled = true;
+        for (const socket of sockets) closeSocket(socket);
+        throw err;
+    });
+};
 const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|s5|socks|http|https|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
@@ -379,7 +521,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         try {
             const exec = strategyExecutorMap.get(list[i].type);
             const sub = (list[i]['concurrent'] && Array.isArray(list[i].param)) ? Math.max(1, Math.floor(concurrency / list[i].param.length)) : undefined;
-            const socket = await (list[i]['concurrent'] && Array.isArray(list[i].param) ? Promise.any(list[i].param.map(ip => exec(parsedRequest, ip, sub, list[i].txt))) : exec(parsedRequest, list[i].param, undefined, list[i].txt));
+            const socket = await (list[i]['concurrent'] && Array.isArray(list[i].param) ? concurrentStrategyExec(parsedRequest, list[i].param, exec, sub, list[i].txt) : exec(parsedRequest, list[i].param, undefined, list[i].txt));
             if (socket) return {socket, speed};
         } catch {}
     }
