@@ -55,6 +55,7 @@ const ssAeadEncryptCount = 16;
 /** TCPsocket并发获取，可提高tcp连接成功率*/
 /**- **警告**: snippets只能设置为1，worker最大支持6，超过6没意义*/
 let concurrency = 4;//socket获取并发数
+const dnsStrategyOrder = ['ipv6', 'ipv4', 'hostname'];//socket获取地址类型连接优先级（可以只指定其中一个）
 // ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
 // ---------------------------------------------------------------------------------
@@ -331,8 +332,8 @@ const dnsConnectResolve = async hostname => {
         return {records, expires: now + Math.min(ttl || 60000, 300000)};
     };
     const [aaaa, a] = await Promise.all([
-        concurrentDnsResolve(hostname, 'AAAA').catch(() => null),
-        concurrentDnsResolve(hostname, 'A').catch(() => null)
+        dnsStrategyOrder.includes('ipv6') ? concurrentDnsResolve(hostname, 'AAAA').catch(() => null) : Promise.resolve(null),
+        dnsStrategyOrder.includes('ipv4') ? concurrentDnsResolve(hostname, 'A').catch(() => null) : Promise.resolve(null)
     ]);
     const ipv6 = parseAnswer(aaaa, 28, true), ipv4 = parseAnswer(a, 1, false);
     const hasRecord = ipv6.records.length || ipv4.records.length;
@@ -377,7 +378,11 @@ const shuffleDnsCandidates = (ipv6 = [], ipv4 = [], hostname) => {
         }
         return records;
     };
-    return [...shuffle(ipv6), ...shuffle(ipv4), hostname];
+    return dnsStrategyOrder.flatMap(strategy =>
+        strategy === 'ipv6' ? shuffle(ipv6) :
+            strategy === 'ipv4' ? shuffle(ipv4) :
+                (strategy === 'hostname' && hostname) ? [hostname] : []
+    );
 };
 const connectCandidates = (candidates, port, limit, socketOptions) => {
     if (candidates.length === 1) {
@@ -415,6 +420,9 @@ const connectCandidates = (candidates, port, limit, socketOptions) => {
 };
 const concurrentConnect = async (hostname, port, limit = concurrency, socketOptions, addrType) => {
     if (addrType !== 3) return connectCandidates([hostname], port, limit, socketOptions);
+    if (dnsStrategyOrder.length === 1 && dnsStrategyOrder[0] === 'hostname') {
+        return connectCandidates([hostname], port, limit, socketOptions);
+    }
     const cached = await getDnsConnectCache(hostname);
     const candidates = shuffleDnsCandidates(cached.ipv6, cached.ipv4, hostname);
     try {

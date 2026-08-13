@@ -11,6 +11,7 @@ const startThreshold = 50 * 1024 * 1024;
 const maxChunkLen = 64 * 1024;
 const flushTime = 4;
 let concurrency = 4;
+const dnsStrategyOrder = ['ipv6', 'ipv4', 'hostname'];
 const urlParamCacheLimit = 20;
 const proxyStrategyOrder = ['socks', 'http', 'https'];
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
@@ -123,18 +124,20 @@ const dnsConnectResolve = async hostname => {
     const parseAnswer = (answer, type, wrap) => {
         const records = [], now = Date.now();
         let ttl = 0;
-        if (answer) for (let i = 0, len = answer.length; i < len; i++) {
-            const record = answer[i];
-            if (record.type === type && record.data) {
-                records.push(wrap ? `[${record.data}]` : record.data);
-                if (record.TTL > 0) ttl = ttl ? Math.min(ttl, record.TTL * 1000) : record.TTL * 1000;
+        if (answer) {
+            for (let i = 0, len = answer.length; i < len; i++) {
+                const record = answer[i];
+                if (record.type === type && record.data) {
+                    records.push(wrap ? `[${record.data}]` : record.data);
+                    if (record.TTL > 0) ttl = ttl ? Math.min(ttl, record.TTL * 1000) : record.TTL * 1000;
+                }
             }
         }
         return {records, expires: now + Math.min(ttl || 60000, 300000)};
     };
     const [aaaa, a] = await Promise.all([
-        concurrentDnsResolve(hostname, 'AAAA').catch(() => null),
-        concurrentDnsResolve(hostname, 'A').catch(() => null)
+        dnsStrategyOrder.includes('ipv6') ? concurrentDnsResolve(hostname, 'AAAA').catch(() => null) : Promise.resolve(null),
+        dnsStrategyOrder.includes('ipv4') ? concurrentDnsResolve(hostname, 'A').catch(() => null) : Promise.resolve(null)
     ]);
     const ipv6 = parseAnswer(aaaa, 28, true), ipv4 = parseAnswer(a, 1, false);
     const hasRecord = ipv6.records.length || ipv4.records.length;
@@ -179,7 +182,11 @@ const shuffleDnsCandidates = (ipv6 = [], ipv4 = [], hostname) => {
         }
         return records;
     };
-    return [...shuffle(ipv6), ...shuffle(ipv4), hostname];
+    return dnsStrategyOrder.flatMap(strategy =>
+        strategy === 'ipv6' ? shuffle(ipv6) :
+            strategy === 'ipv4' ? shuffle(ipv4) :
+                (strategy === 'hostname' && hostname) ? [hostname] : []
+    );
 };
 const connectCandidates = (candidates, port, limit, socketOptions) => {
     if (candidates.length === 1) {
@@ -217,6 +224,9 @@ const connectCandidates = (candidates, port, limit, socketOptions) => {
 };
 const concurrentConnect = async (hostname, port, limit = concurrency, socketOptions, addrType) => {
     if (addrType !== 3) return connectCandidates([hostname], port, limit, socketOptions);
+    if (dnsStrategyOrder.length === 1 && dnsStrategyOrder[0] === 'hostname') {
+        return connectCandidates([hostname], port, limit, socketOptions);
+    }
     const cached = await getDnsConnectCache(hostname);
     const candidates = shuffleDnsCandidates(cached.ipv6, cached.ipv4, hostname);
     try {
