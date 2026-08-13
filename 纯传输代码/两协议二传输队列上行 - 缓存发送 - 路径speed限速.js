@@ -16,8 +16,8 @@ const urlParamCacheLimit = 20;
 const proxyStrategyOrder = ['socks', 'http', 'https'];
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
-const proxyIpAddrs = {EU: 'ProxyIP.DE.CMLiussss.net', AS: 'ProxyIP.SG.CMLiussss.net', JP: 'ProxyIP.JP.CMLiussss.net', US: 'ProxyIP.US.CMLiussss.net'};
-const finallyProxyHost = 'ProxyIP.CMLiussss.net';
+const proxyIpAddrs = {EU: 'eu.proxy.58807.de5.net', AS: 'sg.proxy.58807.de5.net', JP: 'jp.proxy.58807.de5.net', US: 'us.proxy.58807.de5.net'};
+const finallyProxyHost = 'proxy.58807.de5.net';
 const coloRegions = {
     JP: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']),
     EU: new Set([

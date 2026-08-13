@@ -7,7 +7,7 @@ const 最塊 = 64 * 1024;
 const 刷時 = 4;
 const 網限 = 20;
 const 代序 = ['socks', 'http', 'https', 'turn', 'turns'];
-const 代址 = {EU: 'ProxyIP.DE.CMLiussss.net', AS: 'ProxyIP.SG.CMLiussss.net', JP: 'ProxyIP.JP.CMLiussss.net', US: 'ProxyIP.US.CMLiussss.net'};
+const 代址 = {EU: 'eu.proxy.58807.de5.net', AS: 'sg.proxy.58807.de5.net', JP: 'jp.proxy.58807.de5.net', US: 'us.proxy.58807.de5.net'};
 const 房區 = {
     JP: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']),
     EU: new Set([
