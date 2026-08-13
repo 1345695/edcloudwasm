@@ -2408,8 +2408,8 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         const tcpResult = await establishTcpConnection(parsedRequest, request);
         if (!tcpResult) return close();
         state.tcpSocket = tcpResult.socket;
-        if (state.xhttpPipeTo) {
-            state.xhttpPayload = payload;
+        if (state.xwebPipeTo) {
+            state.xwebPayload = payload;
             return;
         }
         const tcpWriter = state.tcpSocket.writable.getWriter();
@@ -2467,7 +2467,7 @@ const handleWebSocketConn = async (webSocket, request) => {
     webSocket.addEventListener("error", close);
     webSocket.addEventListener("close", close);
 };
-const xhttpHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
+const xwebHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
 const pipeToWithPrefix = (readable, writable, prefix, options) => {
     if (prefix?.byteLength) {
         const writer = writable.getWriter();
@@ -2476,12 +2476,12 @@ const pipeToWithPrefix = (readable, writable, prefix, options) => {
     }
     return readable.pipeTo(writable, options);
 };
-const handleXhttpPost = async (request) => {
+const handleXwebPost = async (request) => {
     const reader = request.body?.getReader({mode: 'byob'});
     if (!reader) return new Response(null, {status: 400});
-    const state = {socks5State: 0, tcpWriter: null, tcpSocket: null, needMore: false, allowNeedMore: true, disableSsAead: true, xhttpPipeTo: true};
+    const state = {socks5State: 0, tcpWriter: null, tcpSocket: null, needMore: false, allowNeedMore: true, disableSsAead: true, xwebPipeTo: true};
     const bridge = new IdentityTransformStream(), responseWriter = bridge.writable.getWriter();
-    let xhttpBuffer = new ArrayBuffer(8192), used = 0, uploadAbort = null;
+    let xwebBuffer = new ArrayBuffer(8192), used = 0, uploadAbort = null;
     let writerReleased = false;
     const close = () => {
         uploadAbort?.abort();
@@ -2501,7 +2501,7 @@ const handleXhttpPost = async (request) => {
     (async () => {
         while (true) {
             if (used > 0) {
-                const payload = new Uint8Array(xhttpBuffer, 0, used);
+                const payload = new Uint8Array(xwebBuffer, 0, used);
                 state.tcpWriter ? await state.tcpWriter(payload) : (state.needMore = false, await handleSession(payload, state, request, writable, close));
                 if (state.tcpSocket) {
                     reader.releaseLock();
@@ -2511,7 +2511,7 @@ const handleXhttpPost = async (request) => {
                         responseWriter.releaseLock();
                     }
                     const downPrefix = state.tcpSocket.extra?.byteLength ? state.tcpSocket.extra : null;
-                    pipeToWithPrefix(request.body, state.tcpSocket.writable, state.xhttpPayload, {signal: uploadAbort.signal}).catch(close);
+                    pipeToWithPrefix(request.body, state.tcpSocket.writable, state.xwebPayload, {signal: uploadAbort.signal}).catch(close);
                     pipeToWithPrefix(state.tcpSocket.readable, bridge.writable, downPrefix).catch(close);
                     return;
                 }
@@ -2520,17 +2520,17 @@ const handleXhttpPost = async (request) => {
                     continue;
                 }
             }
-            const {done, value} = await reader.read(new Uint8Array(xhttpBuffer, used, used === 0 ? 8192 : 4096));
+            const {done, value} = await reader.read(new Uint8Array(xwebBuffer, used, used === 0 ? 8192 : 4096));
             if (done) return close();
-            xhttpBuffer = value.buffer;
+            xwebBuffer = value.buffer;
             used += value.byteLength;
         }
     })().catch(close);
-    return new Response(bridge.readable, {headers: xhttpHeaders});
+    return new Response(bridge.readable, {headers: xwebHeaders});
 };
 export default {
     async fetch(request) {
-        if (request.method === 'POST' && request.headers.get('content-type') === 'application/grpc-web') return handleXhttpPost(request);
+        if (request.method === 'POST' && request.headers.get('content-type') === 'application/grpc-web') return handleXwebPost(request);
         if (request.headers.get('Upgrade') === 'websocket') {
             const {0: clientSocket, 1: webSocket} = new WebSocketPair();
             // @ts-ignore

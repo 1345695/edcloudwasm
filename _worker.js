@@ -2309,8 +2309,8 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         const tcpResult = await establishTcpConnection(parsedRequest, request);
         if (!tcpResult) return close();
         state.tcpSocket = tcpResult.socket;
-        if (state.xhttpPipeTo) {
-            state.xhttpPayload = payload;
+        if (state.xwebPipeTo) {
+            state.xwebPayload = payload;
             return;
         }
         const tcpWriter = state.tcpSocket.writable.getWriter();
@@ -2368,7 +2368,7 @@ const handleWebSocketConn = async (webSocket, request) => {
     webSocket.addEventListener("error", close);
     webSocket.addEventListener("close", close);
 };
-const xhttpHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
+const xwebHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
 const pipeToWithPrefix = (readable, writable, prefix, options) => {
     if (prefix?.byteLength) {
         const writer = writable.getWriter();
@@ -2377,12 +2377,12 @@ const pipeToWithPrefix = (readable, writable, prefix, options) => {
     }
     return readable.pipeTo(writable, options);
 };
-const handleXhttpPost = async (request) => {
+const handleXwebPost = async (request) => {
     const reader = request.body?.getReader({mode: 'byob'});
     if (!reader) return new Response(null, {status: 400});
-    const state = {socks5State: 0, tcpWriter: null, tcpSocket: null, needMore: false, allowNeedMore: true, disableSsAead: true, xhttpPipeTo: true};
+    const state = {socks5State: 0, tcpWriter: null, tcpSocket: null, needMore: false, allowNeedMore: true, disableSsAead: true, xwebPipeTo: true};
     const bridge = new IdentityTransformStream(), responseWriter = bridge.writable.getWriter();
-    let xhttpBuffer = new ArrayBuffer(8192), used = 0, uploadAbort = null, writerReleased = false;
+    let xwebBuffer = new ArrayBuffer(8192), used = 0, uploadAbort = null, writerReleased = false;
     const close = () => {
         uploadAbort?.abort();
         try {state.tcpSocket?.close()} catch {}
@@ -2401,7 +2401,7 @@ const handleXhttpPost = async (request) => {
     (async () => {
         while (true) {
             if (used > 0) {
-                const payload = new Uint8Array(xhttpBuffer, 0, used);
+                const payload = new Uint8Array(xwebBuffer, 0, used);
                 state.tcpWriter ? await state.tcpWriter(payload) : (state.needMore = false, await handleSession(payload, state, request, writable, close));
                 if (state.tcpSocket) {
                     reader.releaseLock();
@@ -2411,7 +2411,7 @@ const handleXhttpPost = async (request) => {
                         responseWriter.releaseLock();
                     }
                     const downPrefix = state.tcpSocket.extra?.byteLength ? state.tcpSocket.extra : null;
-                    pipeToWithPrefix(request.body, state.tcpSocket.writable, state.xhttpPayload, {signal: uploadAbort.signal}).catch(close);
+                    pipeToWithPrefix(request.body, state.tcpSocket.writable, state.xwebPayload, {signal: uploadAbort.signal}).catch(close);
                     pipeToWithPrefix(state.tcpSocket.readable, bridge.writable, downPrefix).catch(close);
                     return;
                 }
@@ -2420,13 +2420,13 @@ const handleXhttpPost = async (request) => {
                     continue;
                 }
             }
-            const {done, value} = await reader.read(new Uint8Array(xhttpBuffer, used, used === 0 ? 8192 : 4096));
+            const {done, value} = await reader.read(new Uint8Array(xwebBuffer, used, used === 0 ? 8192 : 4096));
             if (done) return close();
-            xhttpBuffer = value.buffer;
+            xwebBuffer = value.buffer;
             used += value.byteLength;
         }
     })().catch(close);
-    return new Response(bridge.readable, {headers: xhttpHeaders});
+    return new Response(bridge.readable, {headers: xwebHeaders});
 };
 const getErrorResponse = async (status = 200) => {
     if (!rawErrorHtml) rawErrorHtml = await decompressWasm(getErrorHtmlPtr, getErrorHtmlLen);
@@ -2440,7 +2440,7 @@ const getSub = async (request, url, uuid) => {
     const hasVL = url.searchParams.get('vl') === '1';
     const hasTR = url.searchParams.get('tj') === '1';
     const hasWS = url.searchParams.get('ws') === '1';
-    const hasXhttp = url.searchParams.get('xhttp') === '1';
+    const hasXweb = url.searchParams.get('xweb') === '1';
     const hasECH = url.searchParams.get('ech') === '1';
     const hasWsNoTLS = url.searchParams.get('wstls') === '0' || url.searchParams.get('wsnotls') === '1';
     const encPath = encodeURIComponent(proxyPath);
@@ -2457,9 +2457,9 @@ const getSub = async (request, url, uuid) => {
     };
     const addNodes = (base, allowWsNoTLS) => {
         const wsNoTLS = allowWsNoTLS && hasWsNoTLS;
-        const xhttpBase = base + (allowWsNoTLS ? 3 : 2);
+        const xwebBase = base + (allowWsNoTLS ? 3 : 2);
         if (hasWS) processTemplate(base + (wsNoTLS ? 2 : hasECH ? 1 : 0), wsNoTLS ? 80 : 443);
-        if (hasXhttp) processTemplate(xhttpBase + (hasECH ? 1 : 0));
+        if (hasXweb) processTemplate(xwebBase + (hasECH ? 1 : 0));
     };
     if (hasVL) addNodes(0, true);
     if (hasTR) addNodes(5, false);
@@ -2474,7 +2474,7 @@ const getSub = async (request, url, uuid) => {
                     : (url.searchParams.has(strList[9]) || ua.includes(strList[9])) ? strList[9]
                         : (url.searchParams.has(strList[10]) || ua.includes(strList[10])) ? strList[10] : '';
     if (target) {
-        const baseUrl = `${url.protocol}//${url.host}${url.pathname}?uuid=${globalThis.subUuid}&format=raw&path=${encPath}&vl=${hasVL ? 1 : 0}&tj=${hasTR ? 1 : 0}&ws=${hasWS ? 1 : 0}&wstls=${hasWsNoTLS ? 0 : 1}&xhttp=${hasXhttp ? 1 : 0}&ech=${hasECH ? 1 : 0}`;
+        const baseUrl = `${url.protocol}//${url.host}${url.pathname}?uuid=${globalThis.subUuid}&format=raw&path=${encPath}&vl=${hasVL ? 1 : 0}&tj=${hasTR ? 1 : 0}&ws=${hasWS ? 1 : 0}&wstls=${hasWsNoTLS ? 0 : 1}&xweb=${hasXweb ? 1 : 0}&ech=${hasECH ? 1 : 0}`;
         const convertUrl = `${strList[0]}/sub?target=${target}&url=${encodeURIComponent(baseUrl)}&insert=false&config=${encodeURIComponent(strList[1])}&emoji=true&scv=true`;
         try {
             const response = await fetch(convertUrl, {
@@ -2497,7 +2497,7 @@ const getSub = async (request, url, uuid) => {
 export default {
     async fetch(request, env) {
         if (!isInitialized) initializeWasm(env);
-        if (request.method === 'POST' && request.headers.get('content-type') === 'application/grpc-web') return handleXhttpPost(request);
+        if (request.method === 'POST' && request.headers.get('content-type') === 'application/grpc-web') return handleXwebPost(request);
         if (request.headers.get('Upgrade') === 'websocket') {
             const {0: clientSocket, 1: webSocket} = new WebSocketPair();
             webSocket.accept({allowHalfOpen: true}), webSocket.binaryType = "arraybuffer";
