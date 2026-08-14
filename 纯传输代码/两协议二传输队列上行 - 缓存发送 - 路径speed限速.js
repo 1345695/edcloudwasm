@@ -698,7 +698,7 @@ const handleXwebPost = async (request) => {
         if (!writerReleased) {
             writerReleased = true;
             responseWriter.abort().catch(() => {});
-            responseWriter.releaseLock();
+            responseWriter?.releaseLock();
         }
     };
     const writable = {
