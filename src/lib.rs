@@ -45,10 +45,6 @@ static mut HASH: [u8; 56] = [0; 56]; // Trojan Hash
 static mut HTTP_AUTH: [u8; 256] = [0; 256]; // HTTP Auth (Base64) - 256 字节
 static mut SOCKS5_AUTH: [u8; 256] = [0; 256]; // SOCKS5 Auth Packet (Raw bytes) - 256 字节
 
-// 预编译打包的 Web 页面资源
-static PANEL_HTML: &[u8] = include_bytes!("index.html.gz");
-static ERROR_HTML: &[u8] = include_bytes!("404.html.gz");
-
 // ==========================================
 // 导出函数
 // ==========================================
@@ -77,27 +73,6 @@ pub unsafe extern "C" fn getHttpAuthPtr() -> *const u8 {
 #[no_mangle]
 pub unsafe extern "C" fn getSocks5AuthPtr() -> *const u8 {
     core::ptr::addr_of!(SOCKS5_AUTH) as *const u8
-}
-
-/// 获取面板 HTML 资源指针
-#[no_mangle]
-pub unsafe extern "C" fn getPanelHtmlPtr() -> *const u8 {
-    PANEL_HTML.as_ptr()
-}
-/// 获取面板 HTML 资源长度
-#[no_mangle]
-pub unsafe extern "C" fn getPanelHtmlLen() -> i32 {
-    PANEL_HTML.len() as i32
-}
-/// 获取错误页 HTML 资源指针
-#[no_mangle]
-pub unsafe extern "C" fn getErrorHtmlPtr() -> *const u8 {
-    ERROR_HTML.as_ptr()
-}
-/// 获取错误页 HTML 资源长度
-#[no_mangle]
-pub unsafe extern "C" fn getErrorHtmlLen() -> i32 {
-    ERROR_HTML.len() as i32
 }
 
 /// 设置 HTTP 认证长度

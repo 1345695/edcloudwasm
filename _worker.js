@@ -59,25 +59,18 @@ const coloRegions = {
 const coloToProxyMap = new Map();
 for (const [region, colos] of Object.entries(coloRegions)) {for (const colo of colos) coloToProxyMap.set(colo, proxyIpAddrs[region])}
 const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
+const panelHtmlUrl = 'https://1345695.github.io/index-404-html/panel';
+const errorHtmlUrl = 'https://1345695.github.io/index-404-html/';
 import wasmModule from './protocol.wasm';
 const instance = new WebAssembly.Instance(wasmModule);
 const {
     memory, getUuidPtr, getResultPtr, getDataPtr, getHttpAuthPtr, getSocks5AuthPtr, setHttpAuthLenWasm, setSocks5AuthLenWasm, parseProtocolWasm, parseUrlWasm,
-    initCredentialsWasm, getPanelHtmlPtr, getPanelHtmlLen, getErrorHtmlPtr, getErrorHtmlLen, getTemplateWasm, getSecretStringWasm
+    initCredentialsWasm, getTemplateWasm, getSecretStringWasm
 } = instance.exports;
 const wasmMem = new Uint8Array(memory.buffer);
 const wasmRes = new Int32Array(memory.buffer, getResultPtr(), 36);
 const dataPtr = getDataPtr();
-let isInitialized = false, rawHtml = null, rawErrorHtml = null, config = null, cachedTemplates = null, strList = null, userAgentSuffix = null;
-const decompressWasm = async (ptrFn, lenFn) => {
-    const ptr = ptrFn(), len = lenFn();
-    const compressedData = wasmMem.subarray(ptr, ptr + len);
-    const ds = new DecompressionStream("gzip");
-    const writer = ds.writable.getWriter();
-    writer.write(compressedData);
-    writer.close();
-    return await new Response(ds.readable).text();
-};
+let isInitialized = false, config = null, cachedTemplates = null, strList = null, userAgentSuffix = null;
 const getEnv = (env) => {
     if (config) return config;
     config = {
@@ -1782,12 +1775,8 @@ const handleXwebPost = async (request) => {
     })().catch(close);
     return new Response(bridge.readable, {headers: xwebHeaders});
 };
-const getErrorResponse = async (status = 200) => {
-    if (!rawErrorHtml) rawErrorHtml = await decompressWasm(getErrorHtmlPtr, getErrorHtmlLen);
-    return new Response(rawErrorHtml, {status, headers: {'Content-Type': 'text/html; charset=UTF-8'}});
-};
 const getSub = async (request, url, uuid) => {
-    if (uuid && url.searchParams.get('uuid') !== uuid) return await getErrorResponse(404);
+    if (uuid && url.searchParams.get('uuid') !== uuid) return fetch(errorHtmlUrl);
     const ua = (request.headers.get('User-Agent') || '').toLowerCase();
     const proxyPath = url.searchParams.get('path') || '';
     const host = url.hostname;
@@ -1862,13 +1851,13 @@ export default {
         const {uuid, password, user, pass, sspass} = getEnv(env);
         if (url.pathname === '/sub') return await getSub(request, url, uuid);
         if (url.pathname === `/${uuid}` || url.pathname === `/${password}`) {
-            if (!rawHtml) {
-                rawHtml = await decompressWasm(getPanelHtmlPtr, getPanelHtmlLen);
-                const map = {UUID: uuid, PASS: password, HTTPPASS: `${user}:${pass}`, SSPASS: sspass, IPLIST: JSON.stringify(ipListAll), ECHDNS: encodeURIComponent(sharedEchDns)};
-                rawHtml = rawHtml.replace(/{{(UUID|PASS|HTTPPASS|SSPASS|IPLIST|ECHDNS)}}/g, (_, k) => map[k]);
-            }
-            return new Response(rawHtml, {headers: {'Content-Type': 'text/html; charset=UTF-8'}});
+            const panelResponse = await fetch(panelHtmlUrl);
+            if (!panelResponse.ok) throw new Error(`Failed to fetch panel html: ${panelResponse.status}`);
+            let html = await panelResponse.text();
+            const map = {UUID: uuid, PASS: password, HTTPPASS: `${user}:${pass}`, SSPASS: sspass, IPLIST: JSON.stringify(ipListAll), ECHDNS: encodeURIComponent(sharedEchDns)};
+            html = html.replace(/{{(UUID|PASS|HTTPPASS|SSPASS|IPLIST|ECHDNS)}}/g, (_, k) => map[k]);
+            return new Response(html, {headers: {'Content-Type': 'text/html; charset=UTF-8'}});
         }
-        return await getErrorResponse();
+        return fetch(errorHtmlUrl);
     }
 };
