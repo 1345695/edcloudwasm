@@ -36,7 +36,7 @@ for (const [region, colos] of Object.entries(coloRegions)) {for (const colo of c
 const uuidBytes = new Uint8Array(16), hashBytes = new Uint8Array(56), offsets = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4];
 for (let i = 0, c; i < 16; i++) uuidBytes[i] = (((c = uuid.charCodeAt(i * 2 + offsets[i])) > 64 ? c + 9 : c) & 0xF) << 4 | (((c = uuid.charCodeAt(i * 2 + offsets[i] + 1)) > 64 ? c + 9 : c) & 0xF);
 for (let i = 0; i < 56; i++) hashBytes[i] = passWordSha224.charCodeAt(i);
-const [textEncoder, textDecoder, socks5Init] = [new TextEncoder(), new TextDecoder(), new Uint8Array([5, 2, 0, 2])];
+const textEncoder = new TextEncoder, textDecoder = new TextDecoder;
 const html = `<body style=margin:0;overflow:hidden;background:#000><canvas id=c style=width:100vw;height:100vh><script>var C=document.getElementById("c"),g=C.getContext("webgl"),t=0,P,R,F,U,O,X,Y,L,T,b=.4,K="float L(vec3 v){vec3 a=v;float b,c,d;for(int i=0;i<5;i++){b=length(a);c=atan(a.y,a.x)*10.;d=acos(a.z/b)*10.;b=pow(b,8.);a=vec3(b*sin(d)*cos(c),b*sin(d)*sin(c),b*cos(d))+v;if(b>6.)break;}return 4.-dot(a,a);}",VS="attribute vec4 p;varying vec3 d,ld;uniform vec3 r,f,u;uniform float x,y;void main(){gl_Position=p;d=f+r*p.x*x+u*p.y*y;ld=vec3(p.x*x,p.y*y,-1.);}",FS="precision highp float;float L(vec3 v);uniform vec3 r,f,u,o;uniform float t;varying vec3 d,ld;uniform float l;void main(){vec3 tc=vec3(0);for(int i=0;i<4;i++){vec2 of=vec2(mod(float(i),2.),floor(float(i)/2.))*.5;vec3 rd=normalize(d+r*of.x*.001+u*of.y*.001),c=vec3(0);float s=.002*l,r1,r2,r3;for(int k=2;k<1200;k++){float ds=s*float(k);vec3 p=o+rd*ds;if(L(p)>0.){r1=s*float(k-1);r2=ds;for(int j=0;j<24;j++){r3=(r1+r2)*.5;if(L(o+rd*r3)>0.)r2=r3;else r1=r3;}vec3 v=o+rd*r3,nw;float e=r3*1e-4;nw=normalize(vec3(L(v-r*e)-L(v+r*e),L(v-u*e)-L(v+u*e),L(v+f*e)-L(v-f*e)));vec3 rf=reflect(normalize(ld),nw);float d2=dot(v,v),lt=pow(max(0.,dot(rf,vec3(.276,.92,.276))),4.)*.45+max(0.,dot(nw,vec3(.276,.92,.276)))*.25+.3;c=(sin(d2*5.+t+vec3(0,2,4))*.5+.5)*lt;break;}}tc+=c;}gl_FragColor=vec4(pow(tc*.25,vec3(.7)),1);}";function i(){var s=g.createProgram(),v=g.createShader(35633),f=g.createShader(35632);g.shaderSource(v,VS),g.compileShader(v),g.shaderSource(f,FS+K),g.compileShader(f),g.attachShader(s,v),g.attachShader(s,f),g.linkProgram(s),g.useProgram(s),P=g.getAttribLocation(s,"p"),R=g.getUniformLocation(s,"r"),F=g.getUniformLocation(s,"f"),U=g.getUniformLocation(s,"u"),O=g.getUniformLocation(s,"o"),X=g.getUniformLocation(s,"x"),Y=g.getUniformLocation(s,"y"),L=g.getUniformLocation(s,"l"),T=g.getUniformLocation(s,"t"),g.bindBuffer(34962,g.createBuffer()),g.bufferData(34962,new Float32Array([-1,-1,0,1,-1,0,1,1,0,-1,-1,0,1,1,0,-1,1,0]),35044),g.vertexAttribPointer(P,3,5126,!1,0,0),g.enableVertexAttribArray(P)}function w(){t+=.02,innerWidth*devicePixelRatio!=C.width&&(C.width=innerWidth*(d=devicePixelRatio||1),C.height=innerHeight*d,g.viewport(0,0,C.width,C.height));var v=C.width/C.height;g.uniform1f(X,v>1?v:1),g.uniform1f(Y,v>1?1:1/v),g.uniform1f(L,1.6),g.uniform1f(T,t),g.uniform3f(O,1.6*Math.cos(t*.5)*Math.cos(b),1.6*Math.sin(b),1.6*Math.sin(t*.5)*Math.cos(b)),g.uniform3f(R,Math.sin(t*.5),0,-Math.cos(t*.5)),g.uniform3f(U,-Math.sin(b)*Math.cos(t*.5),Math.cos(b),-Math.sin(b)*Math.sin(t*.5)),g.uniform3f(F,-Math.cos(t*.5)*Math.cos(b),-Math.sin(b),-Math.sin(t*.5)*Math.cos(b)),g.drawArrays(4,0,6),requestAnimationFrame(w)}i(),w()</script>`;
 const binaryAddrToString = (addrType, addrBytes) => {
     if (addrType === 3) return textDecoder.decode(addrBytes);
@@ -173,7 +173,7 @@ const getTxtDnsCache = txtdns => {
     });
     return cached.answer ? cached : cached.refreshing;
 };
-const shuffleDnsCandidates = (ipv6 = [], ipv4 = [], hostname) => {
+const shuffleCandidates = (ipv6 = [], ipv4 = [], hostname) => {
     const shuffle = records => {
         records = records.slice();
         for (let i = records.length - 1; i > 0; i--) {
@@ -182,45 +182,54 @@ const shuffleDnsCandidates = (ipv6 = [], ipv4 = [], hostname) => {
         }
         return records;
     };
-    return dnsStrategyOrder.flatMap(strategy =>
-        strategy === 'ipv6' ? shuffle(ipv6) :
-            strategy === 'ipv4' ? shuffle(ipv4) :
-                (strategy === 'hostname' && hostname) ? [hostname] : []
-    );
+    return dnsStrategyOrder.map(strategy => {
+        const candidates = strategy === 'ipv6' ? ipv6 : strategy === 'ipv4' ? ipv4 : (strategy === 'hostname' && hostname) ? [hostname] : [];
+        return candidates.length ? shuffle(candidates) : null;
+    }).filter(Boolean);
+};
+const raceAny = (promises, closeFn) => {
+    let settled = false, winner = null;
+    const resolvedList = [];
+    const wrapped = promises.map(async p => {
+        const res = await p;
+        if (!res) throw new Error();
+        if (settled) {
+            closeFn?.(res);
+            throw new Error();
+        }
+        resolvedList.push(res);
+        return res;
+    });
+    return Promise.any(wrapped).then(win => {
+        settled = true, winner = win;
+        for (const item of resolvedList) if (item !== winner) closeFn?.(item);
+        return winner;
+    }, err => {
+        settled = true;
+        for (const item of resolvedList) closeFn?.(item);
+        throw err;
+    });
 };
 const connectCandidates = (candidates, port, limit, socketOptions) => {
-    if (candidates.length === 1) {
-        if (limit === 1) return createConnect(candidates[0], port, socketOptions);
-        candidates = Array(limit).fill(candidates[0]);
-    }
-    let settled = false, winner = null;
-    let next = 0, failed = 0;
-    const sockets = new Set();
-    const closeSocket = socket => {try {socket?.close()} catch {}};
-    return new Promise((resolve, reject) => {
-        const launch = () => {
-            if (settled) return;
-            if (failed >= candidates.length) {
-                settled = true;
-                for (const socket of sockets) closeSocket(socket);
-                return reject(new Error());
-            }
-            while (sockets.size < limit && next < candidates.length) {
-                const candidate = candidates[next++], socket = connect({hostname: candidate, port}, socketOptions);
-                sockets.add(socket);
-                createConnect(candidate, port, socketOptions, socket).then(openedSocket => {
-                    if (settled) return closeSocket(openedSocket);
-                    settled = true, winner = openedSocket;
-                    for (const other of sockets) if (other !== winner) closeSocket(other);
-                    resolve(openedSocket);
-                }, () => {
-                    sockets.delete(socket), closeSocket(socket), failed++;
-                    launch();
-                });
-            }
-        };
-        launch();
+    if (!candidates?.length) return Promise.reject();
+    if (candidates.length === 1 && limit === 1) return createConnect(candidates[0], port, socketOptions);
+    const targets = (candidates.length === 1 && limit > 1)
+        ? Array(limit).fill(candidates[0])
+        : (limit && candidates.length > limit ? candidates.slice(0, limit) : candidates);
+    const closeSocket = s => {try {s?.close?.()} catch {}};
+    const attempts = targets.map(candidate => {
+        const socket = connect({hostname: candidate, port}, socketOptions);
+        return socket.opened.then(() => socket, err => {
+            closeSocket(socket);
+            throw err;
+        });
     });
+    return raceAny(attempts, closeSocket);
+};
+const connectGroups = async (groups, port, limit, socketOptions) => {
+    let lastError;
+    for (const candidates of groups) try {return await connectCandidates(candidates, port, limit, socketOptions)} catch (err) {lastError = err}
+    throw lastError || new Error('No connect candidates');
 };
 const concurrentConnect = async (hostname, port, limit = concurrency, socketOptions, addrType) => {
     if (addrType !== 3) return connectCandidates([hostname], port, limit, socketOptions);
@@ -228,14 +237,14 @@ const concurrentConnect = async (hostname, port, limit = concurrency, socketOpti
         return connectCandidates([hostname], port, limit, socketOptions);
     }
     const cached = await getDnsConnectCache(hostname);
-    const candidates = shuffleDnsCandidates(cached.ipv6, cached.ipv4, hostname);
+    const groups = shuffleCandidates(cached.ipv6, cached.ipv4, hostname);
     try {
-        return await connectCandidates(candidates, port, limit, socketOptions);
+        return await connectGroups(groups, port, limit, socketOptions);
     } catch (err) {
         const refreshed = cached.refreshing ? await cached.refreshing : null;
         if (refreshed && refreshed !== cached) {
-            const refreshedCandidates = shuffleDnsCandidates(refreshed.ipv6, refreshed.ipv4, hostname);
-            return connectCandidates(refreshedCandidates, port, limit, socketOptions);
+            const refreshedGroups = shuffleCandidates(refreshed.ipv6, refreshed.ipv4, hostname);
+            return connectGroups(refreshedGroups, port, limit, socketOptions);
         }
         throw err;
     }
@@ -244,7 +253,7 @@ const connectViaSocksProxy = async (targetAddrType, targetPortNum, socksAuth, ad
     const socksSocket = await concurrentConnect(socksAuth.hostname, socksAuth.port, limit, undefined, addrTypeIs(socksAuth.hostname));
     const writer = socksSocket.writable.getWriter();
     const reader = socksSocket.readable.getReader();
-    await writer.write(socks5Init);
+    await writer.write(new Uint8Array([5, 2, 0, 2]));
     const {value: authResponse} = await reader.read();
     if (!authResponse || authResponse[0] !== 5 || authResponse[1] === 0xFF) return null;
     if (authResponse[1] === 2) {
@@ -410,27 +419,16 @@ const connectProxyIp = async (param, limit, txt) => {
             }
             resolvedIps = resolvedIps.slice(0, limit);
         }
-        let settled = false, winner = null;
-        const sockets = new Array(resolvedIps.length);
-        const closeSocket = socket => {try {socket?.close()} catch {}};
-        const connectionPromises = resolvedIps.map((ip, i) => {
+        const closeSocket = s => {try {s?.close?.()} catch {}};
+        const connectionPromises = resolvedIps.map(ip => {
             const [host, port] = parseHostPort(ip, 443);
             const socket = connect({hostname: host, port});
-            sockets[i] = socket;
-            return createConnect(host, port, undefined, socket).then(openedSocket => {
-                if (settled && openedSocket !== winner) closeSocket(openedSocket);
-                return openedSocket;
+            return socket.opened.then(() => socket, err => {
+                closeSocket(socket);
+                throw err;
             });
         });
-        return await Promise.any(connectionPromises).then(socket => {
-            settled = true, winner = socket;
-            for (const other of sockets) if (other !== socket) closeSocket(other);
-            return socket;
-        }, err => {
-            settled = true;
-            for (const socket of sockets) closeSocket(socket);
-            throw err;
-        });
+        return raceAny(connectionPromises, closeSocket).catch(() => null);
     }
     const [host, port] = parseHostPort(param, 443);
     return concurrentConnect(host, port, limit, undefined, addrTypeIs(host));
@@ -454,26 +452,9 @@ const strategyExecutorMap = new Map([
     }]
 ]);
 const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
-    let settled = false, winner = null;
-    const sockets = new Set(), closeSocket = socket => {try {socket?.close?.()} catch {}};
-    const attempts = params.map(param => Promise.resolve().then(() => exec(parsedRequest, param, limit, txt)).then(socket => {
-        if (!socket) throw 0;
-        if (settled && socket !== winner) {
-            closeSocket(socket);
-            throw 0;
-        }
-        sockets.add(socket);
-        return socket;
-    }));
-    return Promise.any(attempts).then(socket => {
-        settled = true, winner = socket;
-        for (const other of sockets) if (other !== socket) closeSocket(other);
-        return socket;
-    }, err => {
-        settled = true;
-        for (const socket of sockets) closeSocket(socket);
-        throw err;
-    });
+    const closeResource = s => {try {s?.close?.()} catch {}};
+    const attempts = params.map(param => Promise.resolve().then(() => exec(parsedRequest, param, limit, txt)));
+    return raceAny(attempts, closeResource);
 };
 const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|s5|socks|http|https|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);

@@ -84,7 +84,7 @@ for (const [region, colos] of Object.entries(coloRegions)) {for (const colo of c
 const uuidBytes = new Uint8Array(16), hashBytes = new Uint8Array(56), offsets = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4];
 for (let i = 0, c; i < 16; i++) uuidBytes[i] = (((c = uuid.charCodeAt(i * 2 + offsets[i])) > 64 ? c + 9 : c) & 0xF) << 4 | (((c = uuid.charCodeAt(i * 2 + offsets[i] + 1)) > 64 ? c + 9 : c) & 0xF);
 for (let i = 0; i < 56; i++) hashBytes[i] = passWordSha224.charCodeAt(i);
-const [textEncoder, textDecoder, socks5req] = [new TextEncoder(), new TextDecoder(), new Uint8Array([5, 0, 0, 1, 0, 0, 0, 0, 0, 0])];
+const textEncoder = new TextEncoder(), textDecoder = new TextDecoder(), socks5req = new Uint8Array([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
 let socks5Pkg, httpAuthValue;
 const httpRes200 = textEncoder.encode("HTTP/1.1 200 Connection Established\r\n\r\n"), httpRes407 = textEncoder.encode("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\n\r\n");
 if (socks5AndHttpUser && socks5AndHttpPass) {
@@ -369,7 +369,7 @@ const getTxtDnsCache = txtdns => {
     });
     return cached.answer ? cached : cached.refreshing;
 };
-const shuffleDnsCandidates = (ipv6 = [], ipv4 = [], hostname) => {
+const shuffleCandidates = (ipv6 = [], ipv4 = [], hostname) => {
     const shuffle = records => {
         records = records.slice();
         for (let i = records.length - 1; i > 0; i--) {
@@ -378,45 +378,54 @@ const shuffleDnsCandidates = (ipv6 = [], ipv4 = [], hostname) => {
         }
         return records;
     };
-    return dnsStrategyOrder.flatMap(strategy =>
-        strategy === 'ipv6' ? shuffle(ipv6) :
-            strategy === 'ipv4' ? shuffle(ipv4) :
-                (strategy === 'hostname' && hostname) ? [hostname] : []
-    );
+    return dnsStrategyOrder.map(strategy => {
+        const candidates = strategy === 'ipv6' ? ipv6 : strategy === 'ipv4' ? ipv4 : (strategy === 'hostname' && hostname) ? [hostname] : [];
+        return candidates.length ? shuffle(candidates) : null;
+    }).filter(Boolean);
+};
+const raceAny = (promises, closeFn) => {
+    let settled = false, winner = null;
+    const resolvedList = [];
+    const wrapped = promises.map(async p => {
+        const res = await p;
+        if (!res) throw new Error();
+        if (settled) {
+            closeFn?.(res);
+            throw new Error();
+        }
+        resolvedList.push(res);
+        return res;
+    });
+    return Promise.any(wrapped).then(win => {
+        settled = true, winner = win;
+        for (const item of resolvedList) if (item !== winner) closeFn?.(item);
+        return winner;
+    }, err => {
+        settled = true;
+        for (const item of resolvedList) closeFn?.(item);
+        throw err;
+    });
 };
 const connectCandidates = (candidates, port, limit, socketOptions) => {
-    if (candidates.length === 1) {
-        if (limit === 1) return createConnect(candidates[0], port, socketOptions);
-        candidates = Array(limit).fill(candidates[0]);
-    }
-    let settled = false, winner = null;
-    let next = 0, failed = 0;
-    const sockets = new Set();
-    const closeSocket = socket => {try {socket?.close()} catch {}};
-    return new Promise((resolve, reject) => {
-        const launch = () => {
-            if (settled) return;
-            if (failed >= candidates.length) {
-                settled = true;
-                for (const socket of sockets) closeSocket(socket);
-                return reject(new Error());
-            }
-            while (sockets.size < limit && next < candidates.length) {
-                const candidate = candidates[next++], socket = connect({hostname: candidate, port}, socketOptions);
-                sockets.add(socket);
-                createConnect(candidate, port, socketOptions, socket).then(openedSocket => {
-                    if (settled) return closeSocket(openedSocket);
-                    settled = true, winner = openedSocket;
-                    for (const other of sockets) if (other !== winner) closeSocket(other);
-                    resolve(openedSocket);
-                }, () => {
-                    sockets.delete(socket), closeSocket(socket), failed++;
-                    launch();
-                });
-            }
-        };
-        launch();
+    if (!candidates?.length) return Promise.reject();
+    if (candidates.length === 1 && limit === 1) return createConnect(candidates[0], port, socketOptions);
+    const targets = (candidates.length === 1 && limit > 1)
+        ? Array(limit).fill(candidates[0])
+        : (limit && candidates.length > limit ? candidates.slice(0, limit) : candidates);
+    const closeSocket = s => {try {s?.close?.()} catch {}};
+    const attempts = targets.map(candidate => {
+        const socket = connect({hostname: candidate, port}, socketOptions);
+        return socket.opened.then(() => socket, err => {
+            closeSocket(socket);
+            throw err;
+        });
     });
+    return raceAny(attempts, closeSocket);
+};
+const connectGroups = async (groups, port, limit, socketOptions) => {
+    let lastError;
+    for (const candidates of groups) try {return await connectCandidates(candidates, port, limit, socketOptions)} catch (err) {lastError = err}
+    throw lastError || new Error('No connect candidates');
 };
 const concurrentConnect = async (hostname, port, limit = concurrency, socketOptions, addrType) => {
     if (addrType !== 3) return connectCandidates([hostname], port, limit, socketOptions);
@@ -424,14 +433,14 @@ const concurrentConnect = async (hostname, port, limit = concurrency, socketOpti
         return connectCandidates([hostname], port, limit, socketOptions);
     }
     const cached = await getDnsConnectCache(hostname);
-    const candidates = shuffleDnsCandidates(cached.ipv6, cached.ipv4, hostname);
+    const groups = shuffleCandidates(cached.ipv6, cached.ipv4, hostname);
     try {
-        return await connectCandidates(candidates, port, limit, socketOptions);
+        return await connectGroups(groups, port, limit, socketOptions);
     } catch (err) {
         const refreshed = cached.refreshing ? await cached.refreshing : null;
         if (refreshed && refreshed !== cached) {
-            const refreshedCandidates = shuffleDnsCandidates(refreshed.ipv6, refreshed.ipv4, hostname);
-            return connectCandidates(refreshedCandidates, port, limit, socketOptions);
+            const refreshedGroups = shuffleCandidates(refreshed.ipv6, refreshed.ipv4, hostname);
+            return connectGroups(refreshedGroups, port, limit, socketOptions);
         }
         throw err;
     }
@@ -1513,7 +1522,7 @@ const readStun = async (rd, buf) => {
     let total = buf ? buf.length : 0;
     const pull = async () => {
         const {done, value} = await rd.read();
-        if (done) throw 0;
+        if (done) throw new Error();
         chunks.push(value);
         total += value.length;
     };
@@ -1573,7 +1582,7 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, {addrTy
                 try {
                     sock = await openConn(useTls ? {secureTransport: 'on', allowHalfOpen: false} : undefined);
                 } catch {
-                    if (!useTls) throw 0;
+                    if (!useTls) throw new Error();
                     isCustom = true;
                     sock = await openConn({allowHalfOpen: false});
                 }
@@ -1605,7 +1614,7 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, {addrTy
         let extra = buffered;
         for (; ;) {
             const result = await readStun(rd, extra);
-            if (!result) throw 0;
+            if (!result) throw new Error();
             const [msg, next] = result;
             extra = next;
             if (sameTid(msg.tid, expectedTid)) return [msg, extra];
@@ -1647,9 +1656,9 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, {addrTy
         let tid = newTid();
         await cw.write(stunMsg(0x003, tid, [stunAttr(0x019, new Uint8Array([6, 0, 0, 0]))]));
         let r = await readControl(tid);
-        if (!r) throw 0;
+        if (!r) throw new Error();
         const targetAddress = await targetIp;
-        if (!targetAddress) throw 0;
+        if (!targetAddress) throw new Error();
         const peer = stunAttr(0x012, xorPeer(targetAddress, targetPort));
         let permissionTid = null, connectTid = null, pm = null, cm = null;
         if (r.type === 0x113 && username && parseErr(r.attrs[0x009]) === 401) {
@@ -1674,12 +1683,12 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, {addrTy
                 sign(stunMsg(0x00A, connectTid, [peer, ...aa]))
             ]);
             await cw.write(cat(pm, cm));
-        } else {throw 0}
-        if (r?.type !== 0x103) throw 0;
+        } else {throw new Error()}
+        if (r?.type !== 0x103) throw new Error();
         r = await readControl(permissionTid);
-        if (r?.type !== 0x108) throw 0;
+        if (r?.type !== 0x108) throw new Error();
         r = await readControl(connectTid);
-        if (r?.type !== 0x10A || !r.attrs[0x02A]) throw 0;
+        if (r?.type !== 0x10A || !r.attrs[0x02A]) throw new Error();
         const dRes = await dataPromise;
         const dIsCustom = dRes.isCustom;
         const dw = dIsCustom ? {write: c => dataTls.write(c), releaseLock: () => {}} : data.writable.getWriter();
@@ -1694,7 +1703,7 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, {addrTy
         await dw.write(await sign(stunMsg(0x00B, tid, [stunAttr(0x02A, r.attrs[0x02A]), ...aa])));
         let extra;
         [r, extra] = await readMatching(dr, tid);
-        if (r?.type !== 0x10B) throw 0;
+        if (r?.type !== 0x10B) throw new Error();
         if (!dIsCustom) dr.releaseLock(), dw.releaseLock();
         const tlsStream = dIsCustom ? tlsStreamAdapter(dataTls) : null;
         const readable = tlsStream ? tlsStream.readable : data.readable;
@@ -1968,27 +1977,16 @@ const connectProxyIp = async (param, limit, txt) => {
             }
             resolvedIps = resolvedIps.slice(0, limit);
         }
-        let settled = false, winner = null;
-        const sockets = new Array(resolvedIps.length);
-        const closeSocket = socket => {try {socket?.close()} catch {}};
-        const connectionPromises = resolvedIps.map((ip, i) => {
+        const closeSocket = s => {try {s?.close?.()} catch {}};
+        const connectionPromises = resolvedIps.map(ip => {
             const [host, port] = parseHostPort(ip, 443);
             const socket = connect({hostname: host, port});
-            sockets[i] = socket;
-            return createConnect(host, port, undefined, socket).then(openedSocket => {
-                if (settled && openedSocket !== winner) closeSocket(openedSocket);
-                return openedSocket;
+            return socket.opened.then(() => socket, err => {
+                closeSocket(socket);
+                throw err;
             });
         });
-        return await Promise.any(connectionPromises).then(socket => {
-            settled = true, winner = socket;
-            for (const other of sockets) if (other !== socket) closeSocket(other);
-            return socket;
-        }, err => {
-            settled = true;
-            for (const socket of sockets) closeSocket(socket);
-            throw err;
-        });
+        return raceAny(connectionPromises, closeSocket).catch(() => null);
     }
     const [host, port] = parseHostPort(param, 443);
     return concurrentConnect(host, port, limit, undefined, addrTypeIs(host));
@@ -2026,26 +2024,9 @@ const strategyExecutorMap = new Map([
     }]
 ]);
 const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
-    let settled = false, winner = null;
-    const sockets = new Set(), closeSocket = socket => {try {socket?.close?.()} catch {}};
-    const attempts = params.map(param => Promise.resolve().then(() => exec(parsedRequest, param, limit, txt)).then(socket => {
-        if (!socket) throw 0;
-        if (settled && socket !== winner) {
-            closeSocket(socket);
-            throw 0;
-        }
-        sockets.add(socket);
-        return socket;
-    }));
-    return Promise.any(attempts).then(socket => {
-        settled = true, winner = socket;
-        for (const other of sockets) if (other !== socket) closeSocket(other);
-        return socket;
-    }, err => {
-        settled = true;
-        for (const socket of sockets) closeSocket(socket);
-        throw err;
-    });
+    const closeResource = s => {try {s?.close?.()} catch {}};
+    const attempts = params.map(param => Promise.resolve().then(() => exec(parsedRequest, param, limit, txt)));
+    return raceAny(attempts, closeResource);
 };
 const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|gturns|turnsall|gsstp|sstpall|sstp|s5|socks|http|https|nat64|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
