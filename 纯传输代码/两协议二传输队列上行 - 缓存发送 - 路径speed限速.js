@@ -674,7 +674,10 @@ const handleXwebPost = async (request) => {
     const state = {tcpWriter: null, tcpSocket: null, needMore: false, xwebPipeTo: true};
     const bridge = new IdentityTransformStream(), responseWriter = bridge.writable.getWriter();
     let xwebBuffer = new ArrayBuffer(8192), used = 0;
-    const close = () => {state.tcpSocket?.close()};
+    const close = () => {
+        try {state.tcpSocket?.close()} catch {}
+        if (state.xwebPipeTo) responseWriter.close().catch(() => {});
+    };
     const writable = {send(chunk) {if (chunk?.byteLength) return responseWriter.write(chunk)}};
     (async () => {
         while (true) {
