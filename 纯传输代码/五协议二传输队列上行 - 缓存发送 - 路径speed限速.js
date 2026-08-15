@@ -2328,7 +2328,6 @@ const handleWebSocketConn = async (webSocket, request) => {
     if (earlyData) processingQueue(earlyData);
     webSocket.addEventListener("message", event => (state.tcpWriter || processingQueue)(event.data));
     webSocket.addEventListener("error", close);
-    webSocket.addEventListener("close", close);
 };
 const xwebHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
 const handleXwebPost = async (request) => {
