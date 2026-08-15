@@ -1773,21 +1773,9 @@ const handleXwebPost = async (request) => {
     if (!reader) return new Response(null, {status: 400});
     const state = {socks5State: 0, tcpWriter: null, tcpSocket: null, needMore: false, allowNeedMore: true, disableSsAead: true, xwebPipeTo: true};
     const bridge = new IdentityTransformStream(), responseWriter = bridge.writable.getWriter();
-    let xwebBuffer = new ArrayBuffer(8192), used = 0, writerReleased = false;
-    const close = () => {
-        try {state.tcpSocket?.close()} catch {}
-        if (!writerReleased) {
-            writerReleased = true;
-            responseWriter.abort().catch(() => {});
-            responseWriter?.releaseLock();
-        }
-    };
-    const writable = {
-        send: (chunk) => {
-            if (!chunk?.byteLength || writerReleased) return;
-            return responseWriter.write(chunk);
-        }
-    };
+    let xwebBuffer = new ArrayBuffer(8192), used = 0;
+    const close = () => {state.tcpSocket?.close()};
+    const writable = {send(chunk) {if (chunk?.byteLength) return responseWriter.write(chunk)}};
     (async () => {
         while (true) {
             if (used > 0) {
