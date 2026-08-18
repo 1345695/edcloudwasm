@@ -39,21 +39,30 @@ const proxyStrategyOrder = ['socks', 'http', 'https', 'sstp', 'turn', 'turns', '
 const sharedEchDns = 'lido.fi+https://223.5.5.5/dns-query'; //ECHDNS配置
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
-const proxyIpAddrs = {EU: 'eu.proxy.58807.de5.net', AS: 'sg.proxy.58807.de5.net', JP: 'jp.proxy.58807.de5.net', HK: 'hk.proxy.58807.de5.net', TW: 'tw.proxy.58807.de5.net', US: 'us.proxy.58807.de5.net'};//分区域proxyip
-const finallyProxyHost = 'proxy.58807.de5.net';//兜底proxyip
+const proxyIpAddrs = {
+    US: 'us.proxy.zjcloud.us.ci',
+    SJC: 'sjc.proxy.zjcloud.us.ci',
+    SEA: 'sea.proxy.zjcloud.us.ci',
+    LAX: 'lax.proxy.zjcloud.us.ci',
+    EU: 'eu.proxy.zjcloud.us.ci',
+    SIN: 'sin.proxy.zjcloud.us.ci',
+    NRT: 'nrt.proxy.zjcloud.us.ci',
+    TPE: 'tpe.proxy.zjcloud.us.ci',
+    HKG: 'hkg.proxy.zjcloud.us.ci'
+};
+const finallyProxyHost = 'proxy.zjcloud.us.ci';//兜底proxyip
 // 订阅和面板使用的优选ip地址，可支持ip:port#name格式
 const ipListAll = ["172.64.154.125", "104.18.39.123", "172.64.145.18", "104.18.42.218", "104.18.33.131", "172.64.145.38", "172.64.145.202", "104.18.42.151"];
 const coloRegions = {
-    JP: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']),
-    HK: new Set(['HKG', 'MFM']),
-    TW: new Set(['KHH', 'TPE']),
+    NRT: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']), HKG: new Set(['HKG', 'MFM']), TPE: new Set(['KHH', 'TPE']),
+    LAX: new Set(['LAX']), SEA: new Set(['SEA']), SJC: new Set(['SJC']),
     EU: new Set([
         'ACC', 'ADB', 'ALA', 'ALG', 'AMM', 'AMS', 'ARN', 'ATH', 'BAH', 'BCN', 'BEG', 'BGW', 'BOD', 'BRU', 'BTS', 'BUD', 'CAI',
         'CDG', 'CPH', 'CPT', 'DAR', 'DKR', 'DMM', 'DOH', 'DUB', 'DUR', 'DUS', 'DXB', 'EBB', 'EDI', 'EVN', 'FCO', 'FRA', 'GOT',
         'GVA', 'HAM', 'HEL', 'HRE', 'IST', 'JED', 'JIB', 'JNB', 'KBP', 'KEF', 'KWI', 'LAD', 'LED', 'LHR', 'LIS', 'LOS', 'LUX',
         'LYS', 'MAD', 'MAN', 'MCT', 'MPM', 'MRS', 'MUC', 'MXP', 'NBO', 'OSL', 'OTP', 'PMO', 'PRG', 'RIX', 'RUH', 'RUN', 'SKG',
         'SOF', 'STR', 'TBS', 'TLL', 'TLV', 'TUN', 'VIE', 'VNO', 'WAW', 'ZAG', 'ZRH']),
-    AS: new Set([
+    SIN: new Set([
         'ADL', 'AKL', 'AMD', 'BKK', 'BLR', 'BNE', 'BOM', 'CBR', 'CCU', 'CEB', 'CGK', 'CMB', 'COK', 'DAC', 'DEL', 'HAN',
         'HYD', 'ISB', 'JHB', 'JOG', 'KCH', 'KHI', 'KTM', 'KUL', 'LHE', 'MAA', 'MEL', 'MLE', 'MNL', 'NAG', 'NOU',
         'PAT', 'PBH', 'PER', 'PNH', 'SGN', 'SIN', 'SYD', 'ULN', 'VTE'])
@@ -65,9 +74,10 @@ const getCurrentColo = async () => {
     if (currentColo !== null) return currentColo;
     try {
         const text = await fetch('https://cp.cloudflare.com/cdn-cgi/trace', {
-            headers: {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'}
+            headers: {'User-Agent': 'Mozilla/5.0'}
         }).then(r => r.text());
-        currentColo = text.match(/colo=(\w+)/)?.[1] || '';
+        const i = text.indexOf('colo=');
+        currentColo = text.slice(i + 5, i + 8);
         return currentColo;
     } catch {
         currentColo = null;
