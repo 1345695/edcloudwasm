@@ -39,12 +39,14 @@ const proxyStrategyOrder = ['socks', 'http', 'https', 'sstp', 'turn', 'turns', '
 const sharedEchDns = 'lido.fi+https://223.5.5.5/dns-query'; //ECHDNS配置
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
-const proxyIpAddrs = {EU: 'eu.proxy.58807.de5.net', AS: 'sg.proxy.58807.de5.net', JP: 'jp.proxy.58807.de5.net', US: 'us.proxy.58807.de5.net'};//分区域proxyip
+const proxyIpAddrs = {EU: 'eu.proxy.58807.de5.net', AS: 'sg.proxy.58807.de5.net', JP: 'jp.proxy.58807.de5.net', HK: 'hk.proxy.58807.de5.net', TW: 'tw.proxy.58807.de5.net', US: 'us.proxy.58807.de5.net'};//分区域proxyip
 const finallyProxyHost = 'proxy.58807.de5.net';//兜底proxyip
 // 订阅和面板使用的优选ip地址，可支持ip:port#name格式
 const ipListAll = ["172.64.154.125", "104.18.39.123", "172.64.145.18", "104.18.42.218", "104.18.33.131", "172.64.145.38", "172.64.145.202", "104.18.42.151"];
 const coloRegions = {
     JP: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']),
+    HK: new Set(['HKG', 'MFM']),
+    TW: new Set(['KHH', 'TPE']),
     EU: new Set([
         'ACC', 'ADB', 'ALA', 'ALG', 'AMM', 'AMS', 'ARN', 'ATH', 'BAH', 'BCN', 'BEG', 'BGW', 'BOD', 'BRU', 'BTS', 'BUD', 'CAI',
         'CDG', 'CPH', 'CPT', 'DAR', 'DKR', 'DMM', 'DOH', 'DUB', 'DUR', 'DUS', 'DXB', 'EBB', 'EDI', 'EVN', 'FCO', 'FRA', 'GOT',
@@ -52,12 +54,26 @@ const coloRegions = {
         'LYS', 'MAD', 'MAN', 'MCT', 'MPM', 'MRS', 'MUC', 'MXP', 'NBO', 'OSL', 'OTP', 'PMO', 'PRG', 'RIX', 'RUH', 'RUN', 'SKG',
         'SOF', 'STR', 'TBS', 'TLL', 'TLV', 'TUN', 'VIE', 'VNO', 'WAW', 'ZAG', 'ZRH']),
     AS: new Set([
-        'ADL', 'AKL', 'AMD', 'BKK', 'BLR', 'BNE', 'BOM', 'CBR', 'CCU', 'CEB', 'CGK', 'CMB', 'COK', 'DAC', 'DEL', 'HAN', 'HKG',
-        'HYD', 'ISB', 'JHB', 'JOG', 'KCH', 'KHH', 'KHI', 'KTM', 'KUL', 'LHE', 'MAA', 'MEL', 'MFM', 'MLE', 'MNL', 'NAG', 'NOU',
-        'PAT', 'PBH', 'PER', 'PNH', 'SGN', 'SIN', 'SYD', 'TPE', 'ULN', 'VTE'])
+        'ADL', 'AKL', 'AMD', 'BKK', 'BLR', 'BNE', 'BOM', 'CBR', 'CCU', 'CEB', 'CGK', 'CMB', 'COK', 'DAC', 'DEL', 'HAN',
+        'HYD', 'ISB', 'JHB', 'JOG', 'KCH', 'KHI', 'KTM', 'KUL', 'LHE', 'MAA', 'MEL', 'MLE', 'MNL', 'NAG', 'NOU',
+        'PAT', 'PBH', 'PER', 'PNH', 'SGN', 'SIN', 'SYD', 'ULN', 'VTE'])
 };
 const coloToProxyMap = new Map();
 for (const [region, colos] of Object.entries(coloRegions)) {for (const colo of colos) coloToProxyMap.set(colo, proxyIpAddrs[region])}
+let currentColo = null;
+const getCurrentColo = async () => {
+    if (currentColo !== null) return currentColo;
+    try {
+        const text = await fetch('https://cp.cloudflare.com/cdn-cgi/trace', {
+            headers: {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'}
+        }).then(r => r.text());
+        currentColo = text.match(/colo=(\w+)/)?.[1] || '';
+        return currentColo;
+    } catch {
+        currentColo = null;
+        return '';
+    }
+};
 const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
 const panelHtmlUrl = 'https://1345695.github.io/index-404-html/panel';
 const errorHtmlUrl = 'https://1345695.github.io/index-404-html/';
@@ -1452,7 +1468,8 @@ const establishTcpConnection = async (parsedRequest, request) => {
         list = cachedResult.list, speed = cachedResult.speed;
     } else {
         if (clean.length < 6 || clean.length > 1024) {
-            list.push({type: 0}, {type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
+            const coloProxy = coloToProxyMap.get(await getCurrentColo()) ?? proxyIpAddrs.US;
+            list.push({type: 0}, {type: 3, param: coloProxy}, {type: 3, param: finallyProxyHost});
         } else {
             const urlBytes = textEncoder.encode(clean);
             wasmMem.set(urlBytes, dataPtr);
@@ -1484,8 +1501,9 @@ const establishTcpConnection = async (parsedRequest, request) => {
             if (proxyAll) {
                 !list.length && list.push({type: 0});
             } else {
+                const coloProxy = coloToProxyMap.get(await getCurrentColo()) ?? proxyIpAddrs.US;
                 add(ipVal, 3), add(txtipVal, 3, true);
-                list.push({type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
+                list.push({type: 3, param: coloProxy}, {type: 3, param: finallyProxyHost});
             }
         }
         const oldKey = urlListCacheKeys[urlListCacheIndex];
