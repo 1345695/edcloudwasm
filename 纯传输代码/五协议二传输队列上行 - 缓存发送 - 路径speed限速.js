@@ -64,34 +64,7 @@ const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
 const proxyStrategyOrder = ['socks', 'http', 'https', 'sstp', 'turn', 'turns', 'nat64'];
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
-const proxyIpAddrs = {
-    US: 'us.proxy.zjcloud.us.ci',
-    SJC: 'sjc.proxy.zjcloud.us.ci',
-    SEA: 'sea.proxy.zjcloud.us.ci',
-    LAX: 'lax.proxy.zjcloud.us.ci',
-    EU: 'eu.proxy.zjcloud.us.ci',
-    SIN: 'sin.proxy.zjcloud.us.ci',
-    NRT: 'nrt.proxy.zjcloud.us.ci',
-    TPE: 'tpe.proxy.zjcloud.us.ci',
-    HKG: 'hkg.proxy.zjcloud.us.ci'
-};
 const finallyProxyHost = 'proxy.zjcloud.us.ci';//兜底proxyip
-const coloRegions = {
-    NRT: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']), HKG: new Set(['HKG', 'MFM']), TPE: new Set(['KHH', 'TPE']),
-    LAX: new Set(['LAX']), SEA: new Set(['SEA']), SJC: new Set(['SJC']),
-    EU: new Set([
-        'ACC', 'ADB', 'ALA', 'ALG', 'AMM', 'AMS', 'ARN', 'ATH', 'BAH', 'BCN', 'BEG', 'BGW', 'BOD', 'BRU', 'BTS', 'BUD', 'CAI',
-        'CDG', 'CPH', 'CPT', 'DAR', 'DKR', 'DMM', 'DOH', 'DUB', 'DUR', 'DUS', 'DXB', 'EBB', 'EDI', 'EVN', 'FCO', 'FRA', 'GOT',
-        'GVA', 'HAM', 'HEL', 'HRE', 'IST', 'JED', 'JIB', 'JNB', 'KBP', 'KEF', 'KWI', 'LAD', 'LED', 'LHR', 'LIS', 'LOS', 'LUX',
-        'LYS', 'MAD', 'MAN', 'MCT', 'MPM', 'MRS', 'MUC', 'MXP', 'NBO', 'OSL', 'OTP', 'PMO', 'PRG', 'RIX', 'RUH', 'RUN', 'SKG',
-        'SOF', 'STR', 'TBS', 'TLL', 'TLV', 'TUN', 'VIE', 'VNO', 'WAW', 'ZAG', 'ZRH']),
-    SIN: new Set([
-        'ADL', 'AKL', 'AMD', 'BKK', 'BLR', 'BNE', 'BOM', 'CBR', 'CCU', 'CEB', 'CGK', 'CMB', 'COK', 'DAC', 'DEL', 'HAN',
-        'HYD', 'ISB', 'JHB', 'JOG', 'KCH', 'KHI', 'KTM', 'KUL', 'LHE', 'MAA', 'MEL', 'MLE', 'MNL', 'NAG', 'NOU',
-        'PAT', 'PBH', 'PER', 'PNH', 'SGN', 'SIN', 'SYD', 'ULN', 'VTE'])
-};
-const coloToProxyMap = new Map();
-for (const [region, colos] of Object.entries(coloRegions)) {for (const colo of colos) coloToProxyMap.set(colo, proxyIpAddrs[region])}
 let currentColo = null;
 const getCurrentColo = async () => {
     if (currentColo !== null) return currentColo;
@@ -100,7 +73,8 @@ const getCurrentColo = async () => {
             headers: {'User-Agent': 'Mozilla/5.0'}
         }).then(r => r.text());
         const i = text.indexOf('colo=');
-        currentColo = text.slice(i + 5, i + 8);
+        const colo = i >= 0 ? text.slice(i + 5, i + 8) : '';
+        currentColo = colo ? `${colo.toLowerCase()}.proxy.zjcloud.us.ci` : '';
         return currentColo;
     } catch {
         currentColo = null;
@@ -1992,10 +1966,7 @@ const txtdnsResult = async (txtdns) => {
 };
 const proxyIpRegex = /william|fxpip|hhtxt/;
 const connectProxyIp = async (param, limit, txt) => {
-    if (param === undefined) {
-        const coloProxy = coloToProxyMap.get(await getCurrentColo()) ?? proxyIpAddrs.US;
-        param = coloProxy;
-    }
+    if (param === undefined) param = await getCurrentColo() || finallyProxyHost;
     if (txt || proxyIpRegex.test(param)) {
         let resolvedIps = await txtdnsResult(param);
         if (!resolvedIps || resolvedIps.length === 0) return null;
