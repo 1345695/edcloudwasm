@@ -1398,6 +1398,10 @@ const txtdnsResult = async (txtdns) => {
 };
 const proxyIpRegex = /william|fxpip|hhtxt/;
 const connectProxyIp = async (param, limit, txt) => {
+    if (param === undefined) {
+        const coloProxy = coloToProxyMap.get(await getCurrentColo()) ?? proxyIpAddrs.US;
+        param = coloProxy;
+    }
     if (txt || proxyIpRegex.test(param)) {
         let resolvedIps = await txtdnsResult(param);
         if (!resolvedIps || resolvedIps.length === 0) return null;
@@ -1478,8 +1482,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         list = cachedResult.list, speed = cachedResult.speed;
     } else {
         if (clean.length < 6 || clean.length > 1024) {
-            const coloProxy = coloToProxyMap.get(await getCurrentColo()) ?? proxyIpAddrs.US;
-            list.push({type: 0}, {type: 3, param: coloProxy}, {type: 3, param: finallyProxyHost});
+            list.push({type: 0}, {type: 3}, {type: 3, param: finallyProxyHost});
         } else {
             const urlBytes = textEncoder.encode(clean);
             wasmMem.set(urlBytes, dataPtr);
@@ -1511,9 +1514,8 @@ const establishTcpConnection = async (parsedRequest, request) => {
             if (proxyAll) {
                 !list.length && list.push({type: 0});
             } else {
-                const coloProxy = coloToProxyMap.get(await getCurrentColo()) ?? proxyIpAddrs.US;
                 add(ipVal, 3), add(txtipVal, 3, true);
-                list.push({type: 3, param: coloProxy}, {type: 3, param: finallyProxyHost});
+                list.push({type: 3}, {type: 3, param: finallyProxyHost});
             }
         }
         const oldKey = urlListCacheKeys[urlListCacheIndex];
