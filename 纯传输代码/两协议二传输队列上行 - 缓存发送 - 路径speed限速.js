@@ -132,7 +132,7 @@ const dnsConnectResolve = async hostname => {
                 }
             }
         }
-        return {records, expires: now + Math.min(ttl || 60000, 300000)};
+        return {records, expires: now + Math.max(ttl, 180000)};
     };
     const [aaaa, a] = await Promise.all([
         dnsStrategyOrder.includes('ipv6') ? concurrentDnsResolve(hostname, 'AAAA').catch(() => null) : Promise.resolve(null),
@@ -160,7 +160,7 @@ const getTxtDnsCache = txtdns => {
     let cached = dnsConnectCache.get(key);
     const now = Date.now(), resolve = async () => {
         const answer = await concurrentDnsResolve(txtdns, 'TXT').catch(() => null);
-        const result = {answer, expires: Date.now() + (answer ? 60000 : 5000), refreshing: null};
+        const result = {answer, expires: Date.now() + (answer ? Math.max(ttl, 180000) : 5000), refreshing: null};
         setDnsConnectCache(key, result);
         return result;
     };
