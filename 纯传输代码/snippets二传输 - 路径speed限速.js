@@ -596,23 +596,22 @@ const handleXwebPost = async request => {
     const writable = {send(chunk) {if (chunk?.byteLength) return responseWriter.write(chunk)}};
     (async () => {
         while (true) {
-            if (used > 0) {
-                const payload = new Uint8Array(xwebBuffer, 0, used);
-                state.tcpWriter ? await state.tcpWriter(payload.slice()) : (state.needMore = false, await handleSession(payload, state, request, writable, close));
+            const {done, value} = await reader.read(new Uint8Array(xwebBuffer, used, used === 0 ? 8192 : 4096));
+            if (done) return close();
+            xwebBuffer = value.buffer, used += value.byteLength;
+            const payload = new Uint8Array(xwebBuffer, 0, used);
+            if (state.tcpWriter) {
+                await state.tcpWriter(payload.slice());
+                used = 0;
+            } else {
+                state.needMore = false;
+                await handleSession(payload, state, request, writable, close);
                 if (state.tcpSocket && state.xwebPipeTo) {
-                    state.xwebPipeTo = false;
-                    responseWriter.releaseLock();
+                    state.xwebPipeTo = false, responseWriter.releaseLock();
                     state.tcpSocket.readable.pipeTo(bridge.writable).catch(close)
                 }
-                if (!state.needMore) {
-                    used = 0;
-                    continue
-                }
+                if (!state.needMore) used = 0;
             }
-            const {done: done, value: value} = await reader.read(new Uint8Array(xwebBuffer, used, used === 0 ? 8192 : 4096));
-            if (done) return close();
-            xwebBuffer = value.buffer;
-            used += value.byteLength
         }
     })().catch(close);
     return new Response(bridge.readable, {headers: xwebHeaders})
