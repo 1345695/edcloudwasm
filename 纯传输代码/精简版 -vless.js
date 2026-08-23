@@ -4,6 +4,7 @@ const bufferSize = 256 * 1024;
 const startThreshold = 50 * 1024 * 1024;
 const maxChunkLen = 64 * 1024;
 const flushTime = 3;
+const concurrency = 4;
 const finallyProxyHost = 'proxy.zjcloud.us.ci';
 let currentColo = null;
 const getCurrentColo = async () => {
@@ -23,56 +24,28 @@ const getCurrentColo = async () => {
 };
 const uuidBytes = Uint8Array.from(uuid.replace(/-/g, "").match(/../g), hex => parseInt(hex, 16));
 const textDecoder = new TextDecoder;
-const binaryAddrToString = (addrType, addrBytes) => {
-    if (addrType === 2) return textDecoder.decode(addrBytes);
-    if (addrType === 1) return `${addrBytes[0]}.${addrBytes[1]}.${addrBytes[2]}.${addrBytes[3]}`;
-    let ipv6 = ((addrBytes[0] << 8) | addrBytes[1]).toString(16);
-    for (let i = 1; i < 8; i++) ipv6 += ':' + ((addrBytes[i * 2] << 8) | addrBytes[i * 2 + 1]).toString(16);
-    return `[${ipv6}]`;
-};
-const parseProtocolChunk = (chunk) => {
-    const len = chunk.length;
-    const result = {success: false, needMore: false, handshake: null, parsedRequest: null};
-    if (len < 17) return result.needMore = true, result;
-    for (let i = 0; i < 16; i++) {
-        if (chunk[i + 1] !== uuidBytes[i]) return result;
-    }
-    if (len < 18) return result.needMore = true, result;
-    const offset = 19 + chunk[17];
-    if (len < offset + 4) return result.needMore = true, result;
-    const addrType = chunk[offset + 2];
-    const addrLen = addrType === 2 ? (offset + 3 < len ? chunk[offset + 3] : null) : addrType === 1 ? 4 : addrType === 3 ? 16 : -1;
-    if (addrLen === null) return result.needMore = true, result;
-    if (addrLen > 0) {
-        const addrOffset = addrType === 2 ? offset + 4 : offset + 3;
-        const dataOffset = addrOffset + addrLen;
-        if (len < dataOffset) return result.needMore = true, result;
-        const port = (chunk[offset] << 8) | chunk[offset + 1];
-        result.handshake = new Uint8Array([chunk[0], 0]);
-        result.success = true;
-        result.parsedRequest = {addrType, addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port};
-        return result;
-    }
-    return result;
-};
-const establishTcpConnection = async (parsedRequest, request) => {
-    const hostname = binaryAddrToString(parsedRequest.addrType, parsedRequest.addrBytes);
-    const port = parsedRequest.port;
-    const speed = new URL(request.url).searchParams.get('speed');
-    try {
+const createConnect = (hostname, port, socket = connect({hostname, port})) => socket.opened.then(() => socket);
+const concurrentConnect = (hostname, port) => {
+    let settled = false, winner = null;
+    const sockets = new Array(concurrency);
+    const closeSocket = socket => {try {socket?.close()} catch {}};
+    const attempts = Array.from({length: concurrency}, (_, i) => {
         const socket = connect({hostname, port});
-        await socket.opened;
-        return {socket, speed};
-    } catch {
-        try {
-            const fallbackHost = await getCurrentColo();
-            const socket = connect({hostname: fallbackHost, port});
-            await socket.opened;
-            return {socket, speed};
-        } catch {
-            return null;
-        }
-    }
+        sockets[i] = socket;
+        return createConnect(hostname, port, socket).then(openedSocket => {
+            if (settled && openedSocket !== winner) closeSocket(openedSocket);
+            return openedSocket;
+        });
+    });
+    return Promise.any(attempts).then(socket => {
+        settled = true, winner = socket;
+        for (const other of sockets) if (other !== socket) closeSocket(other);
+        return socket;
+    }, err => {
+        settled = true;
+        for (const socket of sockets) closeSocket(socket);
+        throw err;
+    });
 };
 const manualPipe = async (readable, writable, close, speed) => {
     const n = parseFloat(speed), speedLimit = n > 0;
@@ -179,20 +152,45 @@ const createAsyncMicrotaskQueue = (consume, close) => {
 };
 const handleSession = async (chunk, state, request, writable, close) => {
     state.needMore = false;
-    const parsed = parseProtocolChunk(chunk);
-    if (parsed.handshake) writable.send(parsed.handshake);
-    if (!parsed.success) return parsed.needMore ? (state.needMore = true) : close();
-    const parsedRequest = parsed.parsedRequest;
-    const payload = chunk.subarray(parsedRequest.dataOffset);
-    const tcpResult = await establishTcpConnection(parsedRequest, request);
-    if (!tcpResult) return close();
-    state.tcpSocket = tcpResult.socket;
+    const len = chunk.length;
+    if (len < 17) return state.needMore = true;
+    for (let i = 0; i < 16; i++) if (chunk[i + 1] !== uuidBytes[i]) return close();
+    if (len < 18) return state.needMore = true;
+    const offset = 19 + chunk[17];
+    if (len < offset + 4) return state.needMore = true;
+    const addrType = chunk[offset + 2];
+    const addrLen = addrType === 2 ? (offset + 3 < len ? chunk[offset + 3] : null) : addrType === 1 ? 4 : addrType === 3 ? 16 : -1;
+    if (addrLen === null) return state.needMore = true;
+    if (addrLen <= 0) return close();
+    const addrOffset = addrType === 2 ? offset + 4 : offset + 3;
+    const dataOffset = addrOffset + addrLen;
+    if (len < dataOffset) return state.needMore = true;
+    writable.send(new Uint8Array([chunk[0], 0]));
+    const port = (chunk[offset] << 8) | chunk[offset + 1];
+    const addrBytes = chunk.subarray(addrOffset, addrOffset + addrLen);
+    const payload = chunk.subarray(dataOffset);
+    let hostname;
+    if (addrType === 2) {
+        hostname = textDecoder.decode(addrBytes);
+    } else if (addrType === 1) {
+        hostname = `${addrBytes[0]}.${addrBytes[1]}.${addrBytes[2]}.${addrBytes[3]}`;
+    } else {
+        hostname = ((addrBytes[0] << 8) | addrBytes[1]).toString(16);
+        for (let i = 1; i < 8; i++) hostname += ':' + ((addrBytes[i * 2] << 8) | addrBytes[i * 2 + 1]).toString(16);
+        hostname = `[${hostname}]`;
+    }
+    const speed = new URL(request.url).searchParams.get('speed');
+    try {
+        state.tcpSocket = await concurrentConnect(hostname, port);
+    } catch {
+        try {state.tcpSocket = await concurrentConnect(await getCurrentColo(), port)} catch {return close()}
+    }
     const tcpWriter = state.tcpSocket.writable.getWriter();
     if (payload.byteLength) tcpWriter.write(payload);
     state.tcpWriter ||= createAsyncMicrotaskQueue(null, close);
     state.tcpWriter.writer = tcpWriter;
     if (state.xwebPipeTo) return;
-    manualPipe(state.tcpSocket.readable, writable, close, tcpResult.speed);
+    manualPipe(state.tcpSocket.readable, writable, close, speed);
 };
 const handleWebSocketConn = async (webSocket, request) => {
     const refererHeader = request.headers.get('Referer');
@@ -200,9 +198,7 @@ const handleWebSocketConn = async (webSocket, request) => {
     let earlyDataHeader = null;
     if (refererHeader) {
         earlyDataHeader = protocolHeader.slice(request.headers.get('host').length);
-    } else if (protocolHeader) {
-        earlyDataHeader = protocolHeader;
-    }
+    } else if (protocolHeader) {earlyDataHeader = protocolHeader}
     // @ts-ignore
     const earlyData = earlyDataHeader ? Uint8Array.fromBase64(earlyDataHeader, {alphabet: 'base64url'}) : null;
     const state = {tcpWriter: null, tcpSocket: null};
