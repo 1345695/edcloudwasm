@@ -219,10 +219,7 @@ const handleXwebPost = async (request) => {
     const state = {tcpWriter: null, tcpSocket: null, needMore: false, xwebPipeTo: true};
     const bridge = new IdentityTransformStream(), responseWriter = bridge.writable.getWriter();
     let xwebBuffer = new ArrayBuffer(8192), used = 0;
-    const close = () => {
-        try {state.tcpSocket?.close()} catch {}
-        if (state.xwebPipeTo) responseWriter.close().catch(() => {});
-    };
+    const close = () => {if (state.xwebPipeTo) responseWriter.close().catch(() => {})};
     const writable = {send(chunk) {if (chunk?.byteLength) return responseWriter.write(chunk)}};
     (async () => {
         while (true) {
@@ -238,7 +235,7 @@ const handleXwebPost = async (request) => {
                 await handleSession(payload, state, request, writable, close);
                 if (state.tcpSocket && state.xwebPipeTo) {
                     state.xwebPipeTo = false, responseWriter.releaseLock();
-                    state.tcpSocket.readable.pipeTo(bridge.writable).catch(close)
+                    state.tcpSocket.readable.pipeTo(bridge.writable).catch(close);
                 }
                 if (!state.needMore) used = 0;
             }
