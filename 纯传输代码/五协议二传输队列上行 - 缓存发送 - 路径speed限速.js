@@ -2024,12 +2024,7 @@ const manualPipe = async (readable, writable, close, speed) => {
     const flushBuffer = () => {
         if (isReading) return needsFlush = true;
         fastFlush = offset < fastFlushOffset;
-        if (offset > 0) {
-            offset > safeBufferSize
-                ? (writable.send(bufferView.subarray(0, offset)), bufferView = new Uint8Array(pipeBufferSize))
-                : writable.send(bufferView.slice(0, offset));
-            offset = 0;
-        }
+        if (offset > 0) (writable.send(bufferView.subarray(0, offset)), offset = 0);
         needsFlush = false, protectFlush = false, timerId && (clearTimeout(timerId), timerId = null), resume?.(), resume = null;
     };
     const reader = readable.getReader({mode: 'byob'});
