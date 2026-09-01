@@ -1436,10 +1436,10 @@ const manualPipe = async (readable, writable, close, speed) => {
     const reader = readable.getReader({mode: 'byob'});
     try {
         while (true) {
-            const useSpare = offset > 0 && protectFlush;
-            let readBuffer = bufferView.buffer, readOffset = offset;
-            isReading = offset > 0;
-            useSpare && (readBuffer = spareBuffer, readOffset = 0, isReading = false);
+            let readBuffer, readOffset, useSpare = offset > 0 && protectFlush;
+            useSpare
+                ? (readBuffer = spareBuffer, readOffset = 0, isReading = false)
+                : (readBuffer = bufferView.buffer, readOffset = offset, isReading = offset > 0);
             const {done, value} = await reader.read(new Uint8Array(readBuffer, readOffset, maxChunkLen));
             isReading = false;
             useSpare ? (bufferView.set(value, offset), spareBuffer = value.buffer) : (bufferView = new Uint8Array(value.buffer));
