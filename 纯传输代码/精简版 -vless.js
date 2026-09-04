@@ -86,7 +86,7 @@ const manualPipe = async (readable, writable, close, speed) => {
                 continue;
             }
             offset += chunkLen, totalBytes += chunkLen;
-            if (needsFlush || chunkLen < 2048) {
+            if (needsFlush) {
                 flushBuffer();
             } else {
                 if (fastFlush || chunkLen < 28672) {
@@ -122,13 +122,13 @@ const createAsyncMicrotaskQueue = (consume, close) => {
                     continue;
                 }
                 let chunk = queue[head];
-                if (chunk.byteLength >= maxChunkLen) {
+                if (chunk.byteLength >= 32768) {
                     await enqueue.writer.write(shift());
                     continue;
                 }
                 let mergedLength = 0;
-                coalesceBuffer ||= new Uint8Array(maxChunkLen);
-                while (size > 0 && mergedLength + queue[head].byteLength <= maxChunkLen) {
+                coalesceBuffer ||= new Uint8Array(32768);
+                while (size > 0 && mergedLength + queue[head].byteLength <= 32768) {
                     chunk = shift(), coalesceBuffer.set(chunk, mergedLength), mergedLength += chunk.byteLength;
                 }
                 if (mergedLength > 0) await enqueue.writer.write(coalesceBuffer.subarray(0, mergedLength));
@@ -182,9 +182,9 @@ const handleSession = async (chunk, state, request, writable, close) => {
     }
     const tcpWriter = state.tcpSocket.writable.getWriter();
     if (payload.byteLength) tcpWriter.write(payload);
+    if (state.xwebPipeTo) return state.tcpWriter = (chunk) => tcpWriter.write(chunk);
     state.tcpWriter ||= createAsyncMicrotaskQueue(null, close);
     state.tcpWriter.writer = tcpWriter;
-    if (state.xwebPipeTo) return;
     manualPipe(state.tcpSocket.readable, writable, close, speed);
 };
 const handleWebSocketConn = async (webSocket, request) => {
@@ -213,28 +213,45 @@ const handleXwebPost = async (request) => {
     if (!reader) return new Response(null, {status: 400});
     const state = {tcpWriter: null, tcpSocket: null, needMore: false, xwebPipeTo: true};
     const bridge = new IdentityTransformStream({highWaterMark: 1024 * 1024}), responseWriter = bridge.writable.getWriter();
-    let xwebBuffer = new ArrayBuffer(8192), used = 0;
     const close = () => {if (state.xwebPipeTo) responseWriter.close().catch(() => {})};
     const writable = {send(chunk) {if (chunk?.byteLength) return responseWriter.write(chunk)}};
     (async () => {
-        while (true) {
-            const {done, value} = await reader.read(new Uint8Array(xwebBuffer, used, used === 0 ? 8192 : 4096));
-            if (done) return close();
-            xwebBuffer = value.buffer, used += value.byteLength;
-            const payload = new Uint8Array(xwebBuffer, 0, used);
-            if (state.tcpWriter) {
-                await state.tcpWriter(payload.slice());
-                used = 0;
-            } else {
-                state.needMore = false;
-                await handleSession(payload, state, request, writable, close);
-                if (state.tcpSocket && state.xwebPipeTo) {
-                    state.xwebPipeTo = false, responseWriter.releaseLock();
-                    state.tcpSocket.readable.pipeTo(bridge.writable).catch(close);
+        let bufferView = new Uint8Array(32768), spareBuffer = new ArrayBuffer(8192);
+        let used = 0, timerId = null, isReading = false, needsFlush = false, protectFlush = false;
+        const flushBuffer = () => {
+            if (isReading) return needsFlush = true;
+            if (used > 0 && state.tcpWriter) (state.tcpWriter(bufferView.subarray(0, used)), used = 0);
+            needsFlush = false, protectFlush = false, timerId && (clearTimeout(timerId), timerId = null);
+        };
+        try {
+            while (true) {
+                let readBuffer, readOffset, useSpare = state.tcpWriter && used > 0 && protectFlush;
+                useSpare
+                    ? (readBuffer = spareBuffer, readOffset = 0, isReading = false)
+                    : (readBuffer = bufferView.buffer, readOffset = used, isReading = state.tcpWriter && used > 0);
+                const {done, value} = await reader.read(new Uint8Array(readBuffer, readOffset, 8192));
+                isReading = false;
+                useSpare ? (bufferView.set(value, used), spareBuffer = value.buffer) : (bufferView = new Uint8Array(value.buffer));
+                if (done) break;
+                const chunkLen = value.byteLength;
+                if (!chunkLen) {
+                    needsFlush && flushBuffer();
+                    continue;
                 }
-                if (!state.needMore) used = 0;
+                used += chunkLen;
+                if (state.tcpWriter) {
+                    needsFlush ? flushBuffer() : (timerId ||= setTimeout(flushBuffer, 2), protectFlush = chunkLen < 8192, used > 24576 && flushBuffer());
+                } else {
+                    state.needMore = false;
+                    await handleSession(bufferView.subarray(0, used), state, request, writable, close);
+                    if (state.tcpSocket && state.xwebPipeTo) {
+                        state.xwebPipeTo = false, responseWriter.releaseLock();
+                        state.tcpSocket.readable.pipeTo(bridge.writable).catch(close);
+                    }
+                    if (!state.needMore) used = 0;
+                }
             }
-        }
+        } catch {used = 0, close()} finally {isReading = false, flushBuffer()}
     })().catch(close);
     return new Response(bridge.readable, {headers: xwebHeaders});
 };
