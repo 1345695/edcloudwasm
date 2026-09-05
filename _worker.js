@@ -1591,11 +1591,7 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
                     encrypted.byteLength && writable.send(encrypted);
                 }, close);
                 state.tcpSocket.extra?.length && ssSendQueue(state.tcpSocket.extra);
-                await manualPipe(state.tcpSocket.readable, {
-                    send: (chunk) => {
-                        chunk?.byteLength && ssSendQueue(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
-                    }
-                }, close, tcpResult.speed);
+                await manualPipe(state.tcpSocket.readable, {send: chunk => ssSendQueue(chunk.slice())}, close, tcpResult.speed);
             })().catch(close);
         } else {
             if (state.tcpSocket.extra?.length) await writable.send(state.tcpSocket.extra);
