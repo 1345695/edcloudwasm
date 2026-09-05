@@ -100,7 +100,7 @@ const manualPipe = async (readable, writable, close, speed) => {
     } catch {offset = 0, close?.()} finally {isReading = false, flushBuffer()}
 };
 const createBufferedTcpWriter = (tcpWriter, close) => {
-    const buffer = new Uint8Array(16384);
+    const buffer = new Uint8Array(32768);
     let offset = 0, timerId = null, closed = false;
     const closeWriter = () => {
         if (closed) return;
@@ -117,13 +117,9 @@ const createBufferedTcpWriter = (tcpWriter, close) => {
     };
     return chunk => {
         if (closed) return;
-        const data = chunk.constructor === Uint8Array ? chunk : new Uint8Array(chunk);
-        const len = data.byteLength;
+        const data = chunk.constructor === Uint8Array ? chunk : new Uint8Array(chunk), len = data.byteLength;
         if (!len) return;
-        offset + len > 16384 && flush();
-        len >= 16384
-            ? safeWrite(data)
-            : (buffer.set(data, offset), offset += len, offset === 16384 ? flush() : (timerId ||= setTimeout(flush, 2)));
+        offset + len > 32768 && flush(), buffer.set(data, offset), offset += len, offset === 32768 ? flush() : (timerId ||= setTimeout(flush, 2));
     };
 };
 const createAsyncMicrotaskQueue = (consume, close) => {
