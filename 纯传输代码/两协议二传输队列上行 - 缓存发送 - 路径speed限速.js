@@ -482,12 +482,12 @@ const createBufferedTcpWriter = (tcpWriter, close) => {
     };
 };
 const createAsyncMicrotaskQueue = (consume, close) => {
-    const queue = new Array(1024);
+    const queue = new Array(256).fill(null);
     let head = 0, tail = 0, size = 0, drainActive = false, closed = false;
     const closeQueue = () => {
         if (closed) return;
         closed = true;
-        for (let i = 0; i < 1024; i++) queue[i] = null;
+        for (let i = 0; i < 256; i++) queue[i] = null;
         close?.();
     };
     const drainQueue = async () => {
@@ -495,15 +495,15 @@ const createAsyncMicrotaskQueue = (consume, close) => {
         try {
             while (size > 0 && !closed) {
                 const chunk = queue[head];
-                queue[head] = null, head = (head + 1) & 1023, size--;
+                queue[head] = null, head = (head + 1) & 255, size--;
                 await consume(chunk);
             }
         } catch {closeQueue()} finally {drainActive = false}
     };
     return chunk => {
         if (closed) return;
-        if (size === 1024) return closeQueue();
-        queue[tail] = chunk, tail = (tail + 1) & 1023, size++;
+        if (size === 256) return closeQueue();
+        queue[tail] = chunk, tail = (tail + 1) & 255, size++;
         if (!drainActive) drainActive = true, queueMicrotask(drainQueue);
     };
 };
