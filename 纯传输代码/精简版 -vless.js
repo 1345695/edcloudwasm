@@ -61,8 +61,8 @@ const manualPipe = async (readable, writable, close, speed) => {
     }
     const safeBufferSize = pipeBufferSize - maxChunkLen, fastFlushOffset = maxChunkLen << 1;
     let bufferView = new Uint8Array(pipeBufferSize), spareBuffer = new ArrayBuffer(maxChunkLen);
-    let offset = 0, totalBytes = 0, time = 0, timerId = null, resume = null, isReading = false, needsFlush = false, protectFlush = false;
-    let fastFlush = true;
+    let offset = 0, totalBytes = 0, time = 0, timerId = null, resume = null, isReading = false;
+    let needsFlush = false, protectFlush = false, fastFlush = true, done, value;
     const flushBuffer = () => {
         if (isReading) return needsFlush = true;
         fastFlush = offset < fastFlushOffset;
@@ -72,13 +72,14 @@ const manualPipe = async (readable, writable, close, speed) => {
     const reader = readable.getReader({mode: 'byob'});
     try {
         while (true) {
-            let readBuffer, readOffset, useSpare = offset > 0 && protectFlush;
-            useSpare
-                ? (readBuffer = spareBuffer, readOffset = 0, isReading = false)
-                : (readBuffer = bufferView.buffer, readOffset = offset, isReading = offset > 0);
-            const {done, value} = await reader.read(new Uint8Array(readBuffer, readOffset, maxChunkLen));
-            isReading = false;
-            useSpare ? (bufferView.set(value, offset), spareBuffer = value.buffer) : (bufferView = new Uint8Array(value.buffer));
+            if (offset > 0 && protectFlush) {
+                ({done, value} = await reader.read(new Uint8Array(spareBuffer, 0, maxChunkLen)));
+                bufferView.set(value, offset), spareBuffer = value.buffer;
+            } else {
+                isReading = offset > 0;
+                ({done, value} = await reader.read(new Uint8Array(bufferView.buffer, offset, maxChunkLen)));
+                isReading = false, bufferView = new Uint8Array(value.buffer);
+            }
             if (done) break;
             const chunkLen = value.byteLength;
             if (!chunkLen) {
@@ -219,20 +220,20 @@ const handleXwebPost = async (request) => {
     const close = () => {if (state.xwebPipeTo) responseWriter.close().catch(() => {})};
     const writable = {send(chunk) {if (chunk?.byteLength) return responseWriter.write(chunk)}};
     (async () => {
-        let bufferView = new Uint8Array(32768), spareBuffer = new ArrayBuffer(8192);
-        let used = 0, timerId = null;
+        let bufferView = new Uint8Array(32768), spareBuffer = new ArrayBuffer(8192), used = 0, timerId = null, done, value;
         const flushBuffer = () => {
             if (used > 0 && state.tcpWriter) (state.tcpWriter(bufferView.subarray(0, used)), used = 0);
             timerId && (clearTimeout(timerId), timerId = null);
         };
         try {
             while (true) {
-                let readBuffer, readOffset, useSpare = used > 0 && state.tcpWriter;
-                useSpare
-                    ? (readBuffer = spareBuffer, readOffset = 0)
-                    : (readBuffer = bufferView.buffer, readOffset = used);
-                const {done, value} = await reader.read(new Uint8Array(readBuffer, readOffset, 8192));
-                useSpare ? (bufferView.set(value, used), spareBuffer = value.buffer) : (bufferView = new Uint8Array(value.buffer));
+                if (used > 0 && state.tcpWriter) {
+                    ({done, value} = await reader.read(new Uint8Array(spareBuffer, 0, 8192)));
+                    bufferView.set(value, used), spareBuffer = value.buffer;
+                } else {
+                    ({done, value} = await reader.read(new Uint8Array(bufferView.buffer, used, 8192)));
+                    bufferView = new Uint8Array(value.buffer);
+                }
                 if (done) break;
                 const chunkLen = value.byteLength;
                 if (!chunkLen) continue;
