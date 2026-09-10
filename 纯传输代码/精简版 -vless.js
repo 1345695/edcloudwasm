@@ -199,10 +199,7 @@ const handleWebSocketConn = async (webSocket, request) => {
     const earlyData = earlyDataHeader ? Uint8Array.fromBase64(earlyDataHeader, {alphabet: "base64url"}) : null;
     const state = {tcpWriter: null, tcpSocket: null};
     let processingQueue = null;
-    const close = () => {
-        try {state.tcpSocket?.close()} catch {}
-        try {webSocket.close(1011, 'WebSocket is closed')} catch {}
-    };
+    const close = () => {webSocket.close(1011, 'WebSocket is closed')};
     const process = (chunk) => {
         if (state.tcpWriter) return state.tcpWriter(chunk);
         return handleSession(earlyData ? chunk : new Uint8Array(chunk), state, request, webSocket, close);
@@ -218,14 +215,7 @@ const handleXwebPost = async (request) => {
     if (!reader) return new Response(null, {status: 400});
     const state = {tcpWriter: null, tcpSocket: null, needMore: false, xwebPipeTo: true};
     const bridge = new IdentityTransformStream({highWaterMark: 1024 * 1024}), upBridge = new IdentityTransformStream({highWaterMark: 1024 * 1024 * 1024}), responseWriter = bridge.writable.getWriter();
-    let cleaned = false, ac = new AbortController();
-    const cleanup = (reason) => {
-        if (cleaned) return;
-        cleaned = true;
-        !ac.signal.aborted && ac.abort(reason);
-        if (state.xwebPipeTo) try {responseWriter.abort(reason).catch(() => {})} catch {}
-        try {state.tcpSocket?.close()} catch {}
-    };
+    const close = () => {if (state.xwebPipeTo) state.xwebPipeTo = false, reader.cancel().catch(() => {}), responseWriter.close().catch(() => {})};
     const writable = {send(chunk) {if (chunk?.byteLength) return responseWriter.write(chunk)}};
     (async () => {
         let bufferView = new Uint8Array(32768), spareBuffer = new ArrayBuffer(8192), used = 0, uploaded = 0, timerId = null, done, value;
@@ -247,34 +237,26 @@ const handleXwebPost = async (request) => {
                 if (!chunkLen) continue;
                 used += chunkLen;
                 if (state.tcpWriter) {
-                    uploaded++;
-                    if (uploaded >= 8000) {
+                    if (++uploaded >= 8000) {
                         flush();
                         await state.rawTcpWriter.ready;
                         reader.releaseLock(), state.rawTcpWriter.releaseLock(), state.xwebPipeTo = false, bufferView = null, spareBuffer = null;
-                        request.body.pipeThrough(upBridge, {signal: ac.signal}).pipeTo(state.tcpSocket.writable, {signal: ac.signal}).catch(cleanup);
+                        request.body.pipeThrough(upBridge).pipeTo(state.tcpSocket.writable);
                         break;
                     }
                     used > 24576 ? flush() : (timerId && clearTimeout(timerId), timerId = setTimeout(flush, 2));
                 } else {
                     state.needMore = false;
-                    await handleSession(bufferView.subarray(0, used), state, request, writable, cleanup);
+                    await handleSession(bufferView.subarray(0, used), state, request, writable, close);
                     if (state.tcpSocket && state.xwebPipeTo && !state.downstreamPiped) {
                         state.downstreamPiped = true, responseWriter.releaseLock();
-                        state.tcpSocket.readable.pipeTo(bridge.writable, {signal: ac.signal}).then(() => cleanup(), cleanup);
+                        state.tcpSocket.readable.pipeTo(bridge.writable);
                     }
                     if (!state.needMore) used = 0;
                 }
             }
-        } catch (e) {
-            used = 0;
-            try {await reader?.cancel(e)} catch {}
-            cleanup(e);
-        } finally {
-            flush(), bufferView = null, spareBuffer = null;
-            if (state.xwebPipeTo && !state.tcpSocket) cleanup();
-        }
-    })().catch(cleanup);
+        } catch {used = 0, close()} finally {flush()}
+    })().catch(close);
     return new Response(bridge.readable, {headers: xwebHeaders});
 };
 export default {
