@@ -30,7 +30,7 @@ const ssAeadEncryptCount = 16;
 // ---------------------------------------------------------------------------------
 /**- **警告**: worker最大支持6，超过6没意义*/
 let concurrency = 4;//socket获取并发数
-const dnsStrategyOrder = ['ipv4', 'ipv6', 'hostname'];//socket获取地址类型连接优先级（可以只指定其中一个）
+const dnsStrategyOrder = ['ipv4', 'hostname'];//socket获取地址类型连接优先级（可以只指定其中一个）
 // ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
 // ---------------------------------------------------------------------------------
@@ -526,59 +526,39 @@ const connectViaSocksProxy = async (targetAddrType, targetPortNum, socksAuth, ad
     return socksSocket;
 };
 const tlsStreamAdapter = (tls, initial = new Uint8Array(0)) => {
-    let leftOver = initial, reading = null, closed = false;
-    const readNext = async () => {
-        if (leftOver?.byteLength) {
-            const data = leftOver;
-            leftOver = null;
-            return data;
-        }
-        return await tls.read();
+    let leftOver = initial?.byteLength ? initial : null, reading = null, closed = false, tlsClosed = false;
+    const close = () => {
+        if (tlsClosed) return;
+        tlsClosed = true, closed = true;
+        try {tls.close()} catch {}
     };
+    const readNext = async () => leftOver ? (d => (leftOver = null, d))(leftOver) : tls.read();
     const readable = new ReadableStream({
-        type: 'bytes',
-        async pull(controller) {
-            if (closed) return controller.close();
-            if (!reading) {
-                reading = readNext().finally(() => {reading = null});
-            }
-            const data = await reading;
-            if (!data?.byteLength) {
-                const request = controller.byobRequest;
+        type: 'bytes', autoAllocateChunkSize: 65536,
+        async pull(c) {
+            if (closed) return;
+            try {
+                reading ||= readNext().finally(() => reading = null);
+                const data = await reading;
+                if (!data?.byteLength) {
+                    closed = true;
+                    try {c.close()} catch {}
+                    return void c.byobRequest?.respond(0);
+                }
+                const v = data instanceof Uint8Array ? data : new Uint8Array(data), req = c.byobRequest;
+                if (req) {
+                    const l = Math.min(v.byteLength, req.view.byteLength);
+                    req.view.set(v.subarray(0, l)), leftOver = l < v.byteLength ? v.subarray(l) : null, req.respond(l);
+                } else {c.enqueue(v)}
+            } catch {
                 closed = true;
-                controller.close();
-                if (request) request.respond(0);
-                return;
+                try {c.close()} catch {}
+                close();
             }
-            const value = data instanceof Uint8Array ? data : new Uint8Array(data);
-            const request = controller.byobRequest;
-            if (request) {
-                const view = request.view;
-                const len = Math.min(value.byteLength, view.byteLength);
-                view.set(value.subarray(0, len));
-                if (len < value.byteLength) leftOver = value.subarray(len);
-                request.respond(len);
-            } else {
-                controller.enqueue(value);
-            }
-        },
-        cancel() {
-            closed = true;
-            try {tls.close()} catch {}
-        }
-    });
-    const writable = new WritableStream({
-        write(chunk) {return tls.write(chunk)},
-        close() {
-            closed = true;
-            return tls.close()
-        },
-        abort() {
-            closed = true;
-            return tls.close()
-        }
-    });
-    return {readable, writable};
+        }, cancel: close
+    }, {highWaterMark: 1048576});
+    const writable = new WritableStream({write: c => tls.write(c), close, abort: close});
+    return {readable, writable, close};
 };
 const staticHeaders = `User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\r\nProxy-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n`;
 const encodedStaticHeaders = textEncoder.encode(staticHeaders);
