@@ -32,6 +32,7 @@ const ssAeadEncryptCount = 16;
 // ---------------------------------------------------------------------------------
 /**- **警告**: worker最大支持6，超过6没意义*/
 let concurrency = 4;//socket获取并发数
+const enableSniSniff = true;//域名嗅探开关(支持ss vless trojan)
 const dnsStrategyOrder = ['ipv4', 'ipv6', 'hostname'];//socket获取地址类型连接优先级（可以只指定其中一个）
 // ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
@@ -65,7 +66,7 @@ const errorHtmlUrl = 'https://1345695.github.io/index-404-html/';
 import wasmModule from './protocol.wasm';
 const instance = new WebAssembly.Instance(wasmModule);
 const {
-    memory, getUuidPtr, getResultPtr, getDataPtr, getHttpAuthPtr, getSocks5AuthPtr, setHttpAuthLenWasm, setSocks5AuthLenWasm, parseProtocolWasm, parseUrlWasm,
+    memory, getUuidPtr, getResultPtr, getDataPtr, getHttpAuthPtr, getSocks5AuthPtr, setHttpAuthLenWasm, setSocks5AuthLenWasm, setSniSniffWasm, parseProtocolWasm, parseUrlWasm,
     initCredentialsWasm, getTemplateWasm, getSecretStringWasm
 } = instance.exports;
 const wasmMem = new Uint8Array(memory.buffer);
@@ -84,6 +85,7 @@ const getEnv = (env) => {
     return config;
 };
 const initializeWasm = (env) => {
+    wasmRes[13] = enableSniSniff ? 1 : 0;
     const {uuid, password, user, pass} = getEnv(env);
     const cleanUuid = uuid.replaceAll('-', '').match(/../g);
     if (cleanUuid.length === 32) {
@@ -1268,6 +1270,45 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, {addrTy
         return null;
     }
 };
+const extractSniBytes = (data) => {
+    if (!data || data.length === 0) return null;
+    if (data[0] !== 0x16) return null;
+    if (data.length < 5) return {needMore: true};
+    const recordLen = (data[3] << 8) | data[4];
+    if (data.length < 5 + recordLen) return {needMore: true};
+    if (data[5] !== 0x01) return null;
+    let offset = 43;
+    if (offset >= data.length) return {needMore: true};
+    offset += 1 + data[offset];
+    if (offset + 2 > data.length) return {needMore: true};
+    offset += 2 + ((data[offset] << 8) | data[offset + 1]);
+    if (offset >= data.length) return {needMore: true};
+    offset += 1 + data[offset];
+    if (offset + 2 > data.length) return null;
+    const extLen = (data[offset] << 8) | data[offset + 1];
+    offset += 2;
+    const extEnd = offset + extLen;
+    if (extEnd > data.length) return {needMore: true};
+    while (offset + 4 <= extEnd) {
+        const extType = (data[offset] << 8) | data[offset + 1], len = (data[offset + 2] << 8) | data[offset + 3];
+        offset += 4;
+        if (extType === 0x0000) {
+            let sniOffset = offset + 2;
+            const sniEnd = offset + len;
+            while (sniOffset + 3 <= sniEnd) {
+                const nameType = data[sniOffset], nameLen = (data[sniOffset + 1] << 8) | data[sniOffset + 2];
+                sniOffset += 3;
+                if (nameType === 0x00) {
+                    if (sniOffset + nameLen <= sniEnd) return {sni: data.subarray(sniOffset, sniOffset + nameLen)};
+                    return {needMore: true};
+                }
+                sniOffset += nameLen;
+            }
+        }
+        offset += len;
+    }
+    return null;
+};
 const ipv4ToNat64Ipv6 = (ipv4Address, nat64Prefixes) => {
     const parts = ipv4Address.split('.');
     let hexStr = "";
@@ -1605,11 +1646,9 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
     const allowNeedMore = state.allowNeedMore === true;
     if (allowNeedMore) state.needMore = false;
     let parsedRequest, payload, isSs = false;
-    const ssEnabled = !state.disableSsAead && !!config?.sspass && !state.tcpWriter && state.socks5State === 0;
-    const parseLen = Math.min(chunk.length, 1024);
+    const ssEnabled = !state.disableSsAead && !!config?.sspass && !state.tcpWriter && state.socks5State === 0, parseLen = Math.min(chunk.length, 2048);
     wasmMem.set(chunk.subarray(0, parseLen), dataPtr);
-    const success = parseProtocolWasm(parseLen, state.socks5State);
-    const r = wasmRes, hLen = r[12];
+    const success = parseProtocolWasm(parseLen, state.socks5State), r = wasmRes, hLen = r[12];
     if (hLen > 0) {
         const handshake = wasmMem.slice(dataPtr, dataPtr + hLen);
         writable.send(handshake);
@@ -1619,25 +1658,24 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         if (allowNeedMore && r[14] === 1) return state.needMore = true;
         if (ssEnabled && chunk.length >= 34) {
             try {
-                const decryptCtx = await createSsAeadCtx(chunk.subarray(0, 16));
-                const plain = await ssAeadDecryptFeed(decryptCtx, chunk.subarray(16));
-                const plainLen = plain.length;
+                const decryptCtx = await createSsAeadCtx(chunk.subarray(0, 16)), plain = await ssAeadDecryptFeed(decryptCtx, chunk.subarray(16)), plainLen = plain.length;
                 if (plainLen > 0) {
-                    const addrType = plain[0];
+                    let addrType = plain[0];
                     const addrLen = addrType === 3 ? (plainLen > 1 ? plain[1] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
                     if (addrLen !== null && addrLen > 0) {
-                        const addrOffset = addrType === 3 ? 2 : 1;
-                        const dataOffset = addrOffset + addrLen + 2;
+                        const addrOffset = addrType === 3 ? 2 : 1, dataOffset = addrOffset + addrLen + 2;
                         if (plainLen >= dataOffset) {
-                            const portOffset = dataOffset - 2;
-                            const port = (plain[portOffset] << 8) | plain[portOffset + 1];
-                            parsedRequest = {addrType, addrBytes: plain.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
-                            const encryptCtx = await createSsAeadCtx();
-                            isSs = true;
+                            const portOffset = dataOffset - 2, port = (plain[portOffset] << 8) | plain[portOffset + 1];
+                            let addrBytes = plain.subarray(addrOffset, addrOffset + addrLen);
                             payload = plain.subarray(dataOffset);
-                            state.ssInbound = decryptCtx;
-                            state.ssOutbound = encryptCtx;
-                            state.ssResponseSalt = encryptCtx.salt;
+                            if (enableSniSniff && addrType !== 3 && payload.length > 0) {
+                                const sniRes = extractSniBytes(payload);
+                                if (sniRes?.needMore && allowNeedMore) return state.needMore = true;
+                                sniRes?.sni && (addrType = 3, addrBytes = sniRes.sni);
+                            }
+                            parsedRequest = {addrType, addrBytes, dataOffset, port, isDns: port === 53};
+                            const encryptCtx = await createSsAeadCtx();
+                            isSs = true, state.ssInbound = decryptCtx, state.ssOutbound = encryptCtx, state.ssResponseSalt = encryptCtx.salt;
                         }
                     }
                 }
@@ -1645,9 +1683,7 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         }
         if (!isSs) return close();
     } else {
-        state.socks5State = 0;
-        parsedRequest = {addrType: r[5], port: r[6], dataOffset: r[7], isDns: r[8] === 1, addrBytes: chunk.subarray(r[9], r[9] + r[10]), isHttp: r[11] === 3};
-        payload = chunk.subarray(parsedRequest.dataOffset);
+        state.socks5State = 0, parsedRequest = {addrType: r[5], port: r[6], dataOffset: r[7], isDns: r[8] === 1, addrBytes: chunk.subarray(r[9], r[9] + r[10]), isHttp: r[11] === 3}, payload = chunk.subarray(parsedRequest.dataOffset);
     }
     if (parsedRequest.isDns) {
         const dnsWriter = createDnsWriter(state, writable, close, !(isEarlyData && payload.byteLength));
@@ -1669,8 +1705,7 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
                     if (plain.byteLength) bufferedTcpWriter(plain);
                 });
             };
-            state.ssResponseSalt?.length && writable.send(state.ssResponseSalt);
-            state.ssResponseSalt = null;
+            state.ssResponseSalt?.length && writable.send(state.ssResponseSalt), state.ssResponseSalt = null;
             (async () => {
                 const ssSendQueue = createAsyncMicrotaskQueue(async (chunk) => {
                     const encrypted = await ssAeadEncryptChunks(state.ssOutbound, chunk);

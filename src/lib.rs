@@ -13,6 +13,7 @@ use core::panic::PanicInfo;
 /// [2]: 启用的 HTTP 认证字符串长度
 /// [3]: 启用的 SOCKS5 认证包长度 (SOCKS5_AUTH 缓冲区中有效数据的长度)
 /// [4]: SOCKS5 下一步状态 (0: 无/初始, 1: 等待认证, 2: 等待请求)
+/// [13]: 是否启用 SNI 嗅探 (1为启用, 0为禁用)
 /// [14]: 是否还需要更多协议头数据 (0:不需要, 1:需要)
 ///
 /// --- 协议解析结果 (每次 parseProtocolWasm 后更新) ---
@@ -37,9 +38,13 @@ use core::panic::PanicInfo;
 /// [30]: Speed 参数偏移,  [31]: Speed 参数长度
 /// [32]: Turns 参数偏移,  [33]: Turns 参数长度
 /// [34]: SSTP 参数偏移,   [35]: SSTP 参数长度
-static mut RESULT: [i32; 36] = [0; 36];
+static mut RESULT: [i32; 36] = {
+    let mut r = [0; 36];
+    r[13] = 1; // 默认启用 SNI 嗅探
+    r
+};
 
-static mut COMMON_BUF: [u8; 1024] = [0; 1024]; // 1KB 通用数据缓冲区
+static mut COMMON_BUF: [u8; 2048] = [0; 2048]; // 2KB 通用数据缓冲区
 static mut UUID: [u8; 16] = [0; 16]; // VLESS UUID
 static mut HASH: [u8; 56] = [0; 56]; // Trojan Hash
 static mut HTTP_AUTH: [u8; 256] = [0; 256]; // HTTP Auth (Base64) - 256 字节
@@ -85,6 +90,12 @@ pub unsafe extern "C" fn setHttpAuthLenWasm(len: i32) {
 #[no_mangle]
 pub unsafe extern "C" fn setSocks5AuthLenWasm(len: i32) {
     *RESULT.get_unchecked_mut(3) = len;
+}
+
+/// 设置 SNI 嗅探开关 (1: 启用, 0: 禁用)
+#[no_mangle]
+pub unsafe extern "C" fn setSniSniffWasm(enable: i32) {
+    *RESULT.get_unchecked_mut(13) = enable;
 }
 
 // ==========================================
@@ -344,6 +355,145 @@ unsafe fn find_next_key_start(data: *const u8, mut i: usize, end: usize) -> Opti
 }
 
 // ==========================================
+// TLS ClientHello SNI 嗅探逻辑 (SIMD 加速与强健壮版)
+// ==========================================
+
+enum SniStatus {
+    Found(usize, usize), // (COMMON_BUF 绝对起始索引, 域名长度)
+    NeedMore,
+    NotFound,
+}
+
+/// 提取 TLS ClientHello 中的 SNI (Server Name Indication)
+#[inline(always)]
+unsafe fn extract_sni_wasm(payload_off: usize, len: usize) -> SniStatus {
+    if payload_off >= len {
+        return SniStatus::NotFound;
+    }
+    let data_len = len - payload_off;
+    let data = COMMON_BUF.as_ptr().add(payload_off);
+
+    // 1. ContentType == 0x16 (Handshake)
+    if *data != 0x16 {
+        return SniStatus::NotFound;
+    }
+    if data_len < 5 {
+        return SniStatus::NeedMore;
+    }
+    let record_len = ((*data.add(3) as usize) << 8) | (*data.add(4) as usize);
+    let full_record_len = 5 + record_len;
+    
+    // 【重要修复】：如果未收齐且后续数据能够装入 COMMON_BUF，才要求 NeedMore。
+    // 如果报文总长已超过 2KB 缓冲区物理上限，不可返回 NeedMore（否则死锁假死），直接在已收数据中尽力解析。
+    if data_len < full_record_len && full_record_len + payload_off <= COMMON_BUF.len() {
+        return SniStatus::NeedMore;
+    }
+
+    // 2. HandshakeType == 0x01 (ClientHello)
+    if data_len < 6 || *data.add(5) != 0x01 {
+        return SniStatus::NotFound;
+    }
+
+    // 3. 跳过 Record(5) + MsgType(1) + HandshakeLen(3) + Version(2) + Random(32) = 43
+    let mut offset = 43usize;
+    if offset >= data_len {
+        return SniStatus::NeedMore;
+    }
+    let session_id_len = *data.add(offset) as usize;
+    offset += 1 + session_id_len;
+    if offset + 2 > data_len {
+        return SniStatus::NeedMore;
+    }
+
+    // 4. 跳过 Cipher Suites
+    let cipher_suites_len = ((*data.add(offset) as usize) << 8) | (*data.add(offset + 1) as usize);
+    offset += 2 + cipher_suites_len;
+    if offset >= data_len {
+        return SniStatus::NeedMore;
+    }
+
+    // 5. 跳过 Compression Methods
+    let comp_methods_len = *data.add(offset) as usize;
+    offset += 1 + comp_methods_len;
+    if offset + 2 > data_len {
+        return SniStatus::NotFound;
+    }
+
+    // 6. 扩展块解析
+    let ext_len = ((*data.add(offset) as usize) << 8) | (*data.add(offset + 1) as usize);
+    offset += 2;
+    let ext_end = offset + ext_len;
+    if ext_end > data_len {
+        if ext_end + payload_off <= COMMON_BUF.len() {
+            return SniStatus::NeedMore;
+        }
+        return SniStatus::NotFound;
+    }
+
+    // [SIMD 优化加速] 利用 find_byte_forward 快速判断扩展块中是否存在 0x00
+    // SNI 的 extension_type 为 0x0000，host_name 的 name_type 为 0x00
+    // 若扩展块中完全没有 0x00，则必无 SNI，可直接跳过遍历
+    if find_byte_forward(data, offset, ext_end, 0x00).is_none() {
+        return SniStatus::NotFound;
+    }
+
+    while offset + 4 <= ext_end {
+        let ext_type = ((*data.add(offset) as u16) << 8) | (*data.add(offset + 1) as u16);
+        let elen = ((*data.add(offset + 2) as usize) << 8) | (*data.add(offset + 3) as usize);
+        offset += 4;
+
+        if ext_type == 0x0000 {
+            // 【安全防御】：畸形包防御，SNI 数据至少包含 2 字节的 server_name_list 长度
+            if elen < 2 || offset + elen > ext_end {
+                break;
+            }
+            let mut sni_offset = offset + 2; // 跳过 server_name_list 长度 (2 字节)
+            let sni_end = offset + elen;
+            while sni_offset + 3 <= sni_end {
+                let name_type = *data.add(sni_offset);
+                let name_len = ((*data.add(sni_offset + 1) as usize) << 8)
+                    | (*data.add(sni_offset + 2) as usize);
+                sni_offset += 3;
+                if name_type == 0x00 {
+                    // 仅当域名非空且在界内时才有效
+                    if name_len > 0 && sni_offset + name_len <= sni_end {
+                        return SniStatus::Found(payload_off + sni_offset, name_len);
+                    }
+                    return SniStatus::NeedMore;
+                }
+                sni_offset += name_len;
+            }
+        }
+        offset += elen;
+    }
+
+    SniStatus::NotFound
+}
+
+/// 统一的 SNI 嗅探应用辅助函数（体积优化版）
+#[inline(always)]
+unsafe fn apply_sni_sniff(
+    at: i32,
+    as_: usize,
+    al: i32,
+    full_len: usize,
+    len: usize,
+) -> Option<(i32, i32, i32)> {
+    if *RESULT.get_unchecked(13) == 1 && at != 3 && len >= full_len {
+        match extract_sni_wasm(full_len, len) {
+            SniStatus::Found(soff, slen) => Some((3, soff as i32, slen as i32)),
+            SniStatus::NeedMore => {
+                *RESULT.get_unchecked_mut(14) = 1;
+                None
+            }
+            SniStatus::NotFound => Some((at, as_ as i32, al)),
+        }
+    } else {
+        Some((at, as_ as i32, al))
+    }
+}
+
+// ==========================================
 // 核心入站协议解析逻辑
 // ==========================================
 
@@ -467,7 +617,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
                     let auth_len = *RESULT.get_unchecked(2) as usize;
                     if auth_len > 0 {
                         let mut match_auth = false;
-                        let search_limit = if len > 1024 { 1024 } else { len };
+                        let search_limit = if len > 2048 { 2048 } else { len };
                         let cb = COMMON_BUF.as_ptr();
                         let ha = HTTP_AUTH.as_ptr();
                         let mut p = second_space + 30;
@@ -577,12 +727,17 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
                     let doff = as_ + al as usize;
                     let p = ((*COMMON_BUF.get_unchecked(doff) as i32) << 8)
                         | (*COMMON_BUF.get_unchecked(doff + 1) as i32);
-                    set_res(5, at);
+
+                    let Some((final_at, final_as, final_al)) = apply_sni_sniff(at, as_, al, full_len, len) else {
+                        return false;
+                    };
+
+                    set_res(5, final_at);
                     set_res(6, p);
                     set_res(7, full_len as i32);
                     set_res(8, if p == 53 { 1 } else { 0 });
-                    set_res(9, as_ as i32);
-                    set_res(10, al);
+                    set_res(9, final_as);
+                    set_res(10, final_al);
                     set_res(11, 1);
                     return true;
                 }
@@ -610,12 +765,17 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
                 let doff = as_ + al as usize;
                 let p = ((*COMMON_BUF.get_unchecked(doff) as i32) << 8)
                     | (*COMMON_BUF.get_unchecked(doff + 1) as i32);
-                set_res(5, at);
+
+                let Some((final_at, final_as, final_al)) = apply_sni_sniff(at, as_, al, full_len, len) else {
+                    return false;
+                };
+
+                set_res(5, final_at);
                 set_res(6, p);
                 set_res(7, full_len as i32);
                 set_res(8, if p == 53 { 1 } else { 0 });
-                set_res(9, as_ as i32);
-                set_res(10, al);
+                set_res(9, final_as);
+                set_res(10, final_al);
                 set_res(11, 1);
                 return true;
             }
@@ -666,12 +826,17 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
             }
             let p = ((*COMMON_BUF.get_unchecked(off) as i32) << 8)
                 | (*COMMON_BUF.get_unchecked(off + 1) as i32);
-            set_res(5, at);
+
+            let Some((final_at, final_as, final_al)) = apply_sni_sniff(at, as_, al, full_len, len) else {
+                return false;
+            };
+
+            set_res(5, final_at);
             set_res(6, p);
             set_res(7, full_len as i32);
             set_res(8, if p == 53 { 1 } else { 0 });
-            set_res(9, as_ as i32);
-            set_res(10, al);
+            set_res(9, final_as);
+            set_res(10, final_al);
             set_res(11, 0);
             write_handshake(&[b0, 0]);
             return true;
@@ -700,12 +865,17 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
             }
             let p = ((*COMMON_BUF.get_unchecked(port_off) as i32) << 8)
                 | (*COMMON_BUF.get_unchecked(port_off + 1) as i32);
-            set_res(5, at);
+
+            let Some((final_at, final_as, final_al)) = apply_sni_sniff(at, addr_start, al, full_len, len) else {
+                return false;
+            };
+
+            set_res(5, final_at);
             set_res(6, p);
             set_res(7, full_len as i32);
             set_res(8, if p == 53 { 1 } else { 0 });
-            set_res(9, addr_start as i32);
-            set_res(10, al);
+            set_res(9, final_as);
+            set_res(10, final_al);
             set_res(11, 2);
             return true;
         }

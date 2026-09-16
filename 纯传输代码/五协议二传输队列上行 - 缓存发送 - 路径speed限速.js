@@ -57,6 +57,7 @@ const ssAeadEncryptCount = 16;
 /** TCPsocket并发获取，可提高tcp连接成功率*/
 /**- **警告**: snippets只能设置为1，worker最大支持6，超过6没意义*/
 let concurrency = 4;//socket获取并发数
+const enableSniSniff = true;//域名嗅探开关(支持ss vless trojan)
 const dnsStrategyOrder = ['ipv4', 'ipv6', 'hostname'];//socket获取地址类型连接优先级（可以只指定其中一个）
 // ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
@@ -1636,6 +1637,45 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, {addrTy
         return null;
     }
 };
+const extractSniBytes = (data) => {
+    if (!data || data.length === 0) return null;
+    if (data[0] !== 0x16) return null;
+    if (data.length < 5) return {needMore: true};
+    const recordLen = (data[3] << 8) | data[4];
+    if (data.length < 5 + recordLen) return {needMore: true};
+    if (data[5] !== 0x01) return null;
+    let offset = 43;
+    if (offset >= data.length) return {needMore: true};
+    offset += 1 + data[offset];
+    if (offset + 2 > data.length) return {needMore: true};
+    offset += 2 + ((data[offset] << 8) | data[offset + 1]);
+    if (offset >= data.length) return {needMore: true};
+    offset += 1 + data[offset];
+    if (offset + 2 > data.length) return null;
+    const extLen = (data[offset] << 8) | data[offset + 1];
+    offset += 2;
+    const extEnd = offset + extLen;
+    if (extEnd > data.length) return {needMore: true};
+    while (offset + 4 <= extEnd) {
+        const extType = (data[offset] << 8) | data[offset + 1], len = (data[offset + 2] << 8) | data[offset + 3];
+        offset += 4;
+        if (extType === 0x0000) {
+            let sniOffset = offset + 2;
+            const sniEnd = offset + len;
+            while (sniOffset + 3 <= sniEnd) {
+                const nameType = data[sniOffset], nameLen = (data[sniOffset + 1] << 8) | data[sniOffset + 2];
+                sniOffset += 3;
+                if (nameType === 0x00) {
+                    if (sniOffset + nameLen <= sniEnd) return {sni: data.subarray(sniOffset, sniOffset + nameLen)};
+                    return {needMore: true};
+                }
+                sniOffset += nameLen;
+            }
+        }
+        offset += len;
+    }
+    return null;
+};
 const parseProtocolChunk = (chunk, socks5State) => {
     const len = chunk.length;
     const result = {success: false, needMore: false, nextSocksState: 0, handshake: null, parsedRequest: null};
@@ -1649,18 +1689,14 @@ const parseProtocolChunk = (chunk, socks5State) => {
     if (socks5State === 2) {
         if (len < 4) return result.needMore = true, result;
         if (chunk[0] !== 5 || chunk[1] !== 1) return result;
-        const addrType = chunk[3];
+        let addrType = chunk[3];
         const addrLen = addrType === 3 ? (4 < len ? chunk[4] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
         if (addrLen === null) return result.needMore = true, result;
         if (!(addrLen > 0)) return result;
-        const addrOffset = addrType === 3 ? 5 : 4;
-        const dataOffset = addrOffset + addrLen + 2;
+        const addrOffset = addrType === 3 ? 5 : 4, dataOffset = addrOffset + addrLen + 2;
         if (len < dataOffset) return result.needMore = true, result;
-        const portOffset = dataOffset - 2;
-        const port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
-        result.handshake = socks5req;
-        result.success = true;
-        result.parsedRequest = {addrType, addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
+        const portOffset = dataOffset - 2, port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
+        result.handshake = socks5req, result.success = true, result.parsedRequest = {addrType, addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
         return result;
     }
     if (chunk[0] === 5) {
@@ -1710,9 +1746,7 @@ const parseProtocolChunk = (chunk, socks5State) => {
                 if (lastColon > 8) {
                     let port = 0;
                     for (let i = lastColon + 1, digit; i < secondSpace && (digit = chunk[i] - 48) >= 0 && digit <= 9; i++) port = port * 10 + digit;
-                    result.handshake = httpRes200;
-                    result.success = true;
-                    result.parsedRequest = {addrType: 3, addrBytes: chunk.subarray(8, lastColon), dataOffset: len, port, isDns: port === 53, isHttp: true};
+                    result.handshake = httpRes200, result.success = true, result.parsedRequest = {addrType: 3, addrBytes: chunk.subarray(8, lastColon), dataOffset: len, port, isDns: port === 53, isHttp: true};
                     return result;
                 }
             }
@@ -1728,17 +1762,20 @@ const parseProtocolChunk = (chunk, socks5State) => {
         }
         if (isTJ) {
             if (len < 60) return result.needMore = true, result;
-            const addrType = chunk[59];
+            let addrType = chunk[59];
             const addrLen = addrType === 3 ? (60 < len ? chunk[60] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
             if (addrLen === null) return result.needMore = true, result;
             if (addrLen > 0) {
-                const addrOffset = addrType === 3 ? 61 : 60;
-                const dataOffset = addrOffset + addrLen + 4;
+                const addrOffset = addrType === 3 ? 61 : 60, dataOffset = addrOffset + addrLen + 4;
                 if (len < dataOffset) return result.needMore = true, result;
-                const portOffset = addrOffset + addrLen;
-                const port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
-                result.success = true;
-                result.parsedRequest = {addrType, addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
+                const portOffset = addrOffset + addrLen, port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
+                let addrBytes = chunk.subarray(addrOffset, addrOffset + addrLen);
+                if (enableSniSniff && addrType !== 3 && len >= dataOffset) {
+                    const sniRes = extractSniBytes(chunk.subarray(dataOffset));
+                    if (sniRes?.needMore) return result.needMore = true, result;
+                    sniRes?.sni && (addrType = 3, addrBytes = sniRes.sni);
+                }
+                result.success = true, result.parsedRequest = {addrType, addrBytes, dataOffset, port, isDns: port === 53};
                 return result;
             }
         }
@@ -1762,28 +1799,35 @@ const parseProtocolChunk = (chunk, socks5State) => {
         const addrLen = addrType === 3 ? (offset + 3 < len ? chunk[offset + 3] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
         if (addrLen === null) return result.needMore = true, result;
         if (addrLen > 0) {
-            const addrOffset = addrType === 3 ? offset + 4 : offset + 3;
-            const dataOffset = addrOffset + addrLen;
+            const addrOffset = addrType === 3 ? offset + 4 : offset + 3, dataOffset = addrOffset + addrLen;
             if (len < dataOffset) return result.needMore = true, result;
             const port = (chunk[offset] << 8) | chunk[offset + 1];
-            result.handshake = new Uint8Array([chunk[0], 0]);
-            result.success = true;
-            result.parsedRequest = {addrType, addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
+            let addrBytes = chunk.subarray(addrOffset, addrOffset + addrLen);
+            if (enableSniSniff && addrType !== 3 && len >= dataOffset) {
+                const sniRes = extractSniBytes(chunk.subarray(dataOffset));
+                if (sniRes?.needMore) return result.needMore = true, result;
+                sniRes?.sni && (addrType = 3, addrBytes = sniRes.sni);
+            }
+            result.handshake = new Uint8Array([chunk[0], 0]), result.success = true, result.parsedRequest = {addrType, addrBytes, dataOffset, port, isDns: port === 53};
             return result;
         }
     }
     if (chunk[0] === 1 || chunk[0] === 3 || chunk[0] === 4) {
         if (len < 2) return result.needMore = true, result;
-        const addrLen = chunk[0] === 3 ? (1 < len ? chunk[1] : null) : chunk[0] === 1 ? 4 : chunk[0] === 4 ? 16 : -1;
+        let addrType = chunk[0];
+        const addrLen = addrType === 3 ? (1 < len ? chunk[1] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
         if (addrLen === null) return result.needMore = true, result;
         if (addrLen > 0) {
-            const addrOffset = chunk[0] === 3 ? 2 : 1;
-            const dataOffset = addrOffset + addrLen + 2;
+            const addrOffset = addrType === 3 ? 2 : 1, dataOffset = addrOffset + addrLen + 2;
             if (len < dataOffset) return result.needMore = true, result;
-            const portOffset = dataOffset - 2;
-            const port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
-            result.success = true;
-            result.parsedRequest = {addrType: chunk[0], addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
+            const portOffset = dataOffset - 2, port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
+            let addrBytes = chunk.subarray(addrOffset, addrOffset + addrLen);
+            if (enableSniSniff && addrType !== 3 && len >= dataOffset) {
+                const sniRes = extractSniBytes(chunk.subarray(dataOffset));
+                if (sniRes?.needMore) return result.needMore = true, result;
+                sniRes?.sni && (addrType = 3, addrBytes = sniRes.sni);
+            }
+            result.success = true, result.parsedRequest = {addrType, addrBytes, dataOffset, port, isDns: port === 53};
             return result;
         }
     }
@@ -2127,33 +2171,31 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
     const allowNeedMore = state.allowNeedMore === true;
     if (allowNeedMore) state.needMore = false;
     let parsedRequest, payload, isSs = false;
-    const ssEnabled = !state.disableSsAead && !!ssAeadPassword && !state.tcpWriter && state.socks5State === 0;
-    const parsed = parseProtocolChunk(chunk, state.socks5State);
+    const ssEnabled = !state.disableSsAead && !!ssAeadPassword && !state.tcpWriter && state.socks5State === 0, parsed = parseProtocolChunk(chunk, state.socks5State);
     if (parsed.handshake) writable.send(parsed.handshake);
     if (!parsed.success) {
         if (parsed.nextSocksState > 0) return state.socks5State = parsed.nextSocksState;
         if (allowNeedMore && parsed.needMore) return state.needMore = true;
         if (ssEnabled && chunk.length >= 34) {
             try {
-                const decryptCtx = await createSsAeadCtx(chunk.subarray(0, 16));
-                const plain = await ssAeadDecryptFeed(decryptCtx, chunk.subarray(16));
-                const plainLen = plain.length;
+                const decryptCtx = await createSsAeadCtx(chunk.subarray(0, 16)), plain = await ssAeadDecryptFeed(decryptCtx, chunk.subarray(16)), plainLen = plain.length;
                 if (plainLen > 0) {
-                    const addrType = plain[0];
+                    let addrType = plain[0];
                     const addrLen = addrType === 3 ? (plainLen > 1 ? plain[1] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
                     if (addrLen !== null && addrLen > 0) {
-                        const addrOffset = addrType === 3 ? 2 : 1;
-                        const dataOffset = addrOffset + addrLen + 2;
+                        const addrOffset = addrType === 3 ? 2 : 1, dataOffset = addrOffset + addrLen + 2;
                         if (plainLen >= dataOffset) {
-                            const portOffset = dataOffset - 2;
-                            const port = (plain[portOffset] << 8) | plain[portOffset + 1];
-                            parsedRequest = {addrType, addrBytes: plain.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
-                            const encryptCtx = await createSsAeadCtx();
-                            isSs = true;
+                            const portOffset = dataOffset - 2, port = (plain[portOffset] << 8) | plain[portOffset + 1];
+                            let addrBytes = plain.subarray(addrOffset, addrOffset + addrLen);
                             payload = plain.subarray(dataOffset);
-                            state.ssInbound = decryptCtx;
-                            state.ssOutbound = encryptCtx;
-                            state.ssResponseSalt = encryptCtx.salt;
+                            if (enableSniSniff && addrType !== 3 && payload.length > 0) {
+                                const sniRes = extractSniBytes(payload);
+                                if (sniRes?.needMore && allowNeedMore) return state.needMore = true;
+                                sniRes?.sni && (addrType = 3, addrBytes = sniRes.sni);
+                            }
+                            parsedRequest = {addrType, addrBytes, dataOffset, port, isDns: port === 53};
+                            const encryptCtx = await createSsAeadCtx();
+                            isSs = true, state.ssInbound = decryptCtx, state.ssOutbound = encryptCtx, state.ssResponseSalt = encryptCtx.salt;
                         }
                     }
                 }
@@ -2161,9 +2203,7 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         }
         if (!isSs) return close();
     } else {
-        state.socks5State = 0;
-        parsedRequest = parsed.parsedRequest;
-        payload = chunk.subarray(parsedRequest.dataOffset);
+        state.socks5State = 0, parsedRequest = parsed.parsedRequest, payload = chunk.subarray(parsedRequest.dataOffset);
     }
     if (parsedRequest.isDns) {
         const dnsWriter = createDnsWriter(state, writable, close, !(isEarlyData && payload.byteLength));
@@ -2185,8 +2225,7 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
                     if (plain.byteLength) bufferedTcpWriter(plain);
                 });
             };
-            state.ssResponseSalt?.length && writable.send(state.ssResponseSalt);
-            state.ssResponseSalt = null;
+            state.ssResponseSalt?.length && writable.send(state.ssResponseSalt), state.ssResponseSalt = null;
             (async () => {
                 const ssSendQueue = createAsyncMicrotaskQueue(async (chunk) => {
                     const encrypted = await ssAeadEncryptChunks(state.ssOutbound, chunk);
