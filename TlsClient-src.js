@@ -132,34 +132,6 @@ const u16ToBytes = (value) => [value >> 8, value & 0xff];
  */
 const readU16BE = (buffer, offset) => (buffer[offset] << 8) | buffer[offset + 1];
 /**
- * 将 64 位无符号整数（在 JS Number 安全整数范围内，最高支持 2^53 - 1）编码为 8 字节大端序 TypedArray
- *
- * 【性能优化说明】:
- * 在 TLS 记录层中，序列号 (Sequence Number) 为 64 位大端无符号整数。
- * 本实现规避了 `BigInt` 和 `DataView` 对象的创建开销，利用 JavaScript 32 位位移运算与
- * `Math.floor(value / 0x100000000)` 直接拆解为高 32 位和低 32 位无符号整型并就地写入字节。
- * 该函数仍会为返回值分配一个 8 字节 `Uint8Array`；输入值必须是不超过 `Number.MAX_SAFE_INTEGER` 的非负整数。
- *
- * @param {number} value - 待编码的非负整数序列号
- * @returns {Uint8Array} 长度固定为 8 字节的大端序字节数组
- */
-function u64ToBytesBE(value) {
-    const buffer = new Uint8Array(8);
-    const low = value >>> 0;
-    buffer[7] = low & 0xff;
-    buffer[6] = (low >>> 8) & 0xff;
-    buffer[5] = (low >>> 16) & 0xff;
-    buffer[4] = low >>> 24;
-    if (value > 0xffffffff) {
-        const high = Math.floor(value / 0x100000000) >>> 0;
-        buffer[3] = high & 0xff;
-        buffer[2] = (high >>> 8) & 0xff;
-        buffer[1] = (high >>> 16) & 0xff;
-        buffer[0] = high >>> 24;
-    }
-    return buffer;
-}
-/**
  * 高性能合并多个 Uint8Array 块（单次内存分配并连续填充）
  *
  * 【性能优化说明】:
@@ -600,19 +572,17 @@ function unpadTls13Plaintext(buffer) {
  */
 function xorIv(iv, seqNum) {
     const result = iv.slice();
-    const len = result.length;
     const low = seqNum >>> 0;
-    result[len - 1] ^= low & 0xff;
-    result[len - 2] ^= (low >>> 8) & 0xff;
-    result[len - 3] ^= (low >>> 16) & 0xff;
-    result[len - 4] ^= low >>> 24;
-    if (seqNum > 0xffffffff) {
-        const high = Math.floor(seqNum / 0x100000000) >>> 0;
-        result[len - 5] ^= high & 0xff;
-        result[len - 6] ^= (high >>> 8) & 0xff;
-        result[len - 7] ^= (high >>> 16) & 0xff;
-        result[len - 8] ^= high >>> 24;
-    }
+    const high = seqNum / 0x100000000 >>> 0;
+    const i = result.length - 8;
+    result[i] ^= high >>> 24;
+    result[i + 1] ^= high >>> 16;
+    result[i + 2] ^= high >>> 8;
+    result[i + 3] ^= high;
+    result[i + 4] ^= low >>> 24;
+    result[i + 5] ^= low >>> 16;
+    result[i + 6] ^= low >>> 8;
+    result[i + 7] ^= low;
     return result;
 }
 // ============================================================================
@@ -982,7 +952,7 @@ class TlsClient {
         }
         const task = client.writeQueue.then(async () => {
             if (client.failed || client.closing) throw new Error("Connection failed or closing");
-            const keyUpdateMsg = wrapHandshakeMessage(24, [requestUpdate]);
+            const keyUpdateMsg = wrapHandshakeMessage(24, new Uint8Array([requestUpdate]));
             const encrypted = await client.encryptTls13(keyUpdateMsg, client.nextClientSeq(), 22);
             await client.writer.write(wrapTlsRecord(23, encrypted));
             await client.updateClientKeys();
@@ -1107,7 +1077,7 @@ class TlsClient {
                 // 6. 若服务端请求客户端认证，构造空 Certificate 表示没有可提供的客户端证书
                 let certMessage = EMPTY_BUFFER;
                 if (certRequestReceived) {
-                    certMessage = wrapHandshakeMessage(11, [0, 0, 0, 0]);
+                    certMessage = wrapHandshakeMessage(11, new Uint8Array(4));
                     client.recordHandshake(certMessage);
                 }
                 // 7. 计算并组装客户端 Finished 校验报文: verify_data = HMAC(finished_key, Transcript-Hash)
@@ -1203,7 +1173,7 @@ class TlsClient {
                 // 1. 若服务端请求客户端证书，构造空 Certificate 表示没有可提供的证书
                 let clientCertRecord = EMPTY_BUFFER;
                 if (certRequestReceived) {
-                    const emptyCert = wrapHandshakeMessage(11, [0, 0, 0]);
+                    const emptyCert = wrapHandshakeMessage(11, new Uint8Array(3));
                     client.recordHandshake(emptyCert);
                     clientCertRecord = wrapTlsRecord(22, emptyCert);
                 }
@@ -1385,15 +1355,7 @@ class TlsClient {
     /**
      * TLS 1.2 AES-GCM 数据帧认证加密 (RFC 5289 / RFC 5246)
      *
-     * 【Nonce 组装规范】:
-     * Nonce 长度为 12 字节 = `clientWriteIv (4 字节隐式固定 IV)` || `explicitNonce (8 字节显式值)`。
-     * 本实现直接将当前记录序列号的大端编码用作 `explicitNonce`。
-     * 显式 Nonce (8 字节) 必须前置放置在最终输出密文负载的头部，随报文传输给对端。
-     *
-     * 【AAD (关联认证数据) 构造规范 (13 字节)】:
-     * ```text
-     * AAD = seq_num (8B) || contentType (1B) || 0x0303 (2B) || plaintext.length (2B)
-     * ```
+     * 采用无分支算法原地组装 AAD 与 Nonce，规避对象创建，并调用 Web Crypto 进行认证加密。
      *
      * @param {Uint8Array} plaintext - 待加密的明文数据
      * @param {number} contentType - 协议类型 (22: Handshake, 23: Application Data, 21: Alert)
@@ -1401,20 +1363,28 @@ class TlsClient {
      * @returns {Promise<Uint8Array>} 组装好的密文数据: `[8 字节显式 Nonce] || [密文主体] || [16 字节 Auth Tag]`
      */
     async encryptTls12(plaintext, contentType, seqNum = this.nextClientSeq()) {
-        const explicitNonce = u64ToBytesBE(seqNum);
-        const iv = new Uint8Array(12);
-        iv.set(this.clientWriteIv);
-        iv.set(explicitNonce, 4);
         const aad = new Uint8Array(13);
-        aad.set(explicitNonce);
+        const l = seqNum >>> 0, h = (seqNum / 0x100000000) >>> 0;
+        aad[0] = h >>> 24;
+        aad[1] = h >>> 16;
+        aad[2] = h >>> 8;
+        aad[3] = h;
+        aad[4] = l >>> 24;
+        aad[5] = l >>> 16;
+        aad[6] = l >>> 8;
+        aad[7] = l;
         aad[8] = contentType;
         aad[9] = 3;
         aad[10] = 3;
         aad[11] = plaintext.length >> 8;
-        aad[12] = plaintext.length & 0xff;
+        aad[12] = plaintext.length;
+        const seqBytes = aad.subarray(0, 8);
+        const iv = new Uint8Array(12);
+        iv.set(this.clientWriteIv);
+        iv.set(seqBytes, 4);
         const encrypted = await aesGcmEncrypt(this.clientWriteKey, iv, plaintext, aad);
         const result = new Uint8Array(8 + encrypted.length);
-        result.set(explicitNonce);
+        result.set(seqBytes);
         result.set(encrypted, 8);
         return result;
     }
@@ -1422,7 +1392,7 @@ class TlsClient {
      * TLS 1.2 AES-GCM 数据帧认证解密 (RFC 5289 / RFC 5246)
      *
      * 从密文切片头部提取 8 字节显式 Nonce，结合 4 字节服务端固定隐式 IV 拼装 12 字节 Nonce；
-     * 将当前 `Number` 序列号拆成高低 32 位并写入 13 字节 AAD，再调用 Web Crypto 校验认证标签并解密。
+     * 采用无分支算法原地组装 13 字节 AAD，并调用 Web Crypto 校验认证标签并解密。
      *
      * @param {Uint8Array} recordFragment - 记录层密文切片 (包含前置 8B 显式 Nonce 与尾部 16B Tag)
      * @param {number} contentType - 记录层协议类型
@@ -1436,24 +1406,21 @@ class TlsClient {
         iv.set(this.serverWriteIv);
         iv.set(explicitNonce, 4);
         const aad = new Uint8Array(13);
-        const low = seqNum >>> 0;
+        const l = seqNum >>> 0, h = (seqNum / 0x100000000) >>> 0;
+        aad[0] = h >>> 24;
+        aad[1] = h >>> 16;
+        aad[2] = h >>> 8;
+        aad[3] = h;
+        aad[4] = l >>> 24;
+        aad[5] = l >>> 16;
+        aad[6] = l >>> 8;
+        aad[7] = l;
         const plaintextLen = ciphertext.length - 16;
-        aad[7] = low & 0xff;
-        aad[6] = (low >>> 8) & 0xff;
-        aad[5] = (low >>> 16) & 0xff;
-        aad[4] = low >>> 24;
-        if (seqNum > 0xffffffff) {
-            const high = Math.floor(seqNum / 0x100000000) >>> 0;
-            aad[3] = high & 0xff;
-            aad[2] = (high >>> 8) & 0xff;
-            aad[1] = (high >>> 16) & 0xff;
-            aad[0] = high >>> 24;
-        }
         aad[8] = contentType;
         aad[9] = 3;
         aad[10] = 3;
         aad[11] = plaintextLen >> 8;
-        aad[12] = plaintextLen & 0xff;
+        aad[12] = plaintextLen;
         return aesGcmDecrypt(this.serverWriteKey, iv, ciphertext, aad);
     }
     /**
