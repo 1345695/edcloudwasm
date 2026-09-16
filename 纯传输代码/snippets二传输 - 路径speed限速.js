@@ -1,69 +1,71 @@
 import {connect as ce} from "cloudflare:sockets";
-const ke = "d342d11e-d424-4583-b36e-524ab1f0afa4";
-const Ue = 256 * 1024;
-const Se = 50 * 1024 * 1024;
-const Q = 64 * 1024;
-const Me = 4;
-const ie = ["socks", "http", "https", "turn", "turns"];
-const ue = "https://cloudflare-dns.com/dns-query";
-const Y = "proxy.zjcloud.us.ci";
-const We = Uint8Array.from(ke.replaceAll('-', '').match(/../g), r => parseInt(r, 16));
-const F = new TextEncoder, Z = new TextDecoder;
-const Re = `<html><head><title>404 Not Found</title></head><body><center><h1>404 Not Found</h1></center><hr><center>nginx/1.25.3</center></body></html>`;
-const ee = (r, n) => {
-    if (r === 2) return Z.decode(n);
-    if (r === 1) return `${n[0]}.${n[1]}.${n[2]}.${n[3]}`;
-    let e = (n[0] << 8 | n[1]).toString(16);
-    for (let t = 1; t < 8; t++) e += ":" + (n[t * 2] << 8 | n[t * 2 + 1]).toString(16);
-    return `[${e}]`
+const ue = "d342d11e-d424-4583-b36e-524ab1f0afa4";
+const ke = 256 * 1024;
+const We = 50 * 1024 * 1024;
+const V = 64 * 1024;
+const Re = 4;
+const fe = ["socks", "http", "https", "turn", "turns"];
+const pe = "https://cloudflare-dns.com/dns-query";
+const Z = "proxy.zjcloud.us.ci";
+const he = e => e > 64 ? (e & 7) + 9 : e & 15;
+const M = e => he(ue.charCodeAt(e)) << 4 | he(ue.charCodeAt(e + 1));
+const Ce = M(0), Le = M(2), Ee = M(4), Pe = M(6), Oe = M(9), He = M(11), Ie = M(14), $e = M(16), ve = M(19), ze = M(21), De = M(24), Fe = M(26), Be = M(28), Ne = M(30), je = M(32), Qe = M(34);
+const B = new TextEncoder, ee = new TextDecoder;
+const Ve = `<html><head><title>404 Not Found</title></head><body><center><h1>404 Not Found</h1></center><hr><center>nginx/1.25.3</center></body></html>`;
+const te = (e, n) => {
+    if (e === 2) return ee.decode(n);
+    if (e === 1) return `${n[0]}.${n[1]}.${n[2]}.${n[3]}`;
+    let t = (n[0] << 8 | n[1]).toString(16);
+    for (let r = 1; r < 8; r++) t += ":" + (n[r * 2] << 8 | n[r * 2 + 1]).toString(16);
+    return `[${t}]`
 };
-const te = (r, n) => {
-    let e = r, t = n, s;
-    if (r.charCodeAt(0) === 91) {
-        if ((s = r.indexOf("]:")) !== -1) {
-            e = r.substring(0, s + 1);
-            t = r.substring(s + 2)
+const re = (e, n) => {
+    let t = e, r = n, s;
+    if (e.charCodeAt(0) === 91) {
+        if ((s = e.indexOf("]:")) !== -1) {
+            t = e.substring(0, s + 1);
+            r = e.substring(s + 2)
         }
-    } else if ((s = r.indexOf(".tp")) !== -1 && r.lastIndexOf(":") === -1) {t = r.substring(s + 3, r.indexOf(".", s + 3))} else if ((s = r.lastIndexOf(":")) !== -1) {
-        e = r.substring(0, s);
-        t = r.substring(s + 1)
+    } else if ((s = e.indexOf(".tp")) !== -1 && e.lastIndexOf(":") === -1) {r = e.substring(s + 3, e.indexOf(".", s + 3))} else if ((s = e.lastIndexOf(":")) !== -1) {
+        t = e.substring(0, s);
+        r = e.substring(s + 1)
     }
-    return [e, (t = parseInt(t), isNaN(t) ? n : t)]
+    return [t, (r = parseInt(r), isNaN(r) ? n : r)]
 };
-const Le = r => {
-    let n, e, t;
-    const s = r.lastIndexOf("@");
-    if (s === -1) {t = r} else {
-        const c = r.substring(0, s);
-        t = r.substring(s + 1);
-        const i = c.indexOf(":");
-        if (i === -1) {n = c} else {
-            n = c.substring(0, i);
-            e = c.substring(i + 1)
+const _e = e => {
+    let n, t, r;
+    const s = e.lastIndexOf("@");
+    if (s === -1) {r = e} else {
+        const i = e.substring(0, s);
+        r = e.substring(s + 1);
+        const c = i.indexOf(":");
+        if (c === -1) {n = i} else {
+            n = i.substring(0, c);
+            t = i.substring(c + 1)
         }
     }
-    const [o, l] = te(t, 1080);
-    return {username: n, password: e, hostname: o, port: l}
+    const [o, l] = re(r, 1080);
+    return {username: n, password: t, hostname: o, port: l}
 };
-const V = (r, n, e, t = ce({hostname: r, port: n}, e)) => t.opened.then(() => t);
-const Ce = async (r, n, e, t) => {
-    const s = await V(e.hostname, e.port);
+const _ = (e, n, t, r = ce({hostname: e, port: n}, t)) => r.opened.then(() => r);
+const Ke = async (e, n, t, r) => {
+    const s = await _(t.hostname, t.port);
     const o = s.writable.getWriter(), l = s.readable.getReader();
     await o.write(new Uint8Array([5, 2, 0, 2]));
-    const {value: c} = await l.read();
-    if (!c || c[0] !== 5 || c[1] === 255) return null;
-    if (c[1] === 2) {
-        if (!e.username) return null;
-        const h = F.encode(e.username), y = F.encode(e.password || "");
+    const {value: i} = await l.read();
+    if (!i || i[0] !== 5 || i[1] === 255) return null;
+    if (i[1] === 2) {
+        if (!t.username) return null;
+        const h = B.encode(t.username), y = B.encode(t.password || "");
         const d = h.length, m = y.length, w = new Uint8Array(3 + d + m);
         w[0] = 1, w[1] = d, w.set(h, 2), w[2 + d] = m, w.set(y, 3 + d);
         await o.write(w);
         const {value: x} = await l.read();
         if (!x || x[0] !== 1 || x[1] !== 0) return null
-    } else if (c[1] !== 0) {return null}
-    const i = r === 3, u = new Uint8Array(6 + t.length + (i ? 1 : 0));
-    u[0] = 5, u[1] = 1, u[2] = 0, u[3] = r;
-    i ? (u[4] = t.length, u.set(t, 5)) : u.set(t, 4);
+    } else if (i[1] !== 0) {return null}
+    const c = e === 3, u = new Uint8Array(6 + r.length + (c ? 1 : 0));
+    u[0] = 5, u[1] = 1, u[2] = 0, u[3] = e;
+    c ? (u[4] = r.length, u.set(r, 5)) : u.set(r, 4);
     u[u.length - 2] = n >> 8, u[u.length - 1] = n & 255;
     await o.write(u);
     const {value: a} = await l.read();
@@ -71,603 +73,603 @@ const Ce = async (r, n, e, t) => {
     o.releaseLock(), l.releaseLock();
     return s
 };
-const Ee = `User-Agent:Mozilla/5.0(X11;Linux x86_64)AppleWebKit/537.36\r\nProxy-Connection:Keep-Alive\r\nConnection:Keep-Alive\r\n\r\n`;
-const re = F.encode(Ee);
-const fe = async (r, n, e, t, s = false) => {
-    const {username: o, password: l, hostname: c, port: i} = e;
+const Xe = `User-Agent:Mozilla/5.0(X11;Linux x86_64)AppleWebKit/537.36\r\nProxy-Connection:Keep-Alive\r\nConnection:Keep-Alive\r\n\r\n`;
+const ne = B.encode(Xe);
+const de = async (e, n, t, r, s = false) => {
+    const {username: o, password: l, hostname: i, port: c} = t;
     const u = s ? {secureTransport: "on", allowHalfOpen: false} : void 0;
-    const a = await V(c, i, u), h = a.writable.getWriter();
-    const y = ee(r, t);
+    const a = await _(i, c, u), h = a.writable.getWriter();
+    const y = te(e, r);
     let d = `CONNECT ${y}:${n} HTTP/1.1\r\nHost:${y}:${n}\r\n`;
-    if (o) d += `Proxy-Authorization:Basic ${btoa(`${o}:${l || ""}`)}\r\n`;
-    const m = new Uint8Array(d.length * 3 + re.length), {written: w} = F.encodeInto(d, m);
-    m.set(re, w);
-    await h.write(m.subarray(0, w + re.length));
+    if (o) {d += `Proxy-Authorization:Basic ${btoa(`${o}:${l || ""}`)}\r\n`}
+    const m = new Uint8Array(d.length * 3 + ne.length), {written: w} = B.encodeInto(d, m);
+    m.set(ne, w);
+    await h.write(m.subarray(0, w + ne.length));
     h.releaseLock();
-    const x = a.readable.getReader(), k = new Uint8Array(512);
-    let U = 0, A = false;
-    while (U < k.length) {
-        const {value: g, done: $} = await x.read();
-        if ($ || U + g.length > k.length) return null;
-        const M = U;
-        k.set(g, U), U += g.length;
-        if (!A && U >= 12) {
-            if (k[9] !== 50) return null;
+    const x = a.readable.getReader(), T = new Uint8Array(512);
+    let S = 0, A = false;
+    while (S < T.length) {
+        const {value: g, done: v} = await x.read();
+        if (v || S + g.length > T.length) return null;
+        const W = S;
+        T.set(g, S), S += g.length;
+        if (!A && S >= 12) {
+            if (T[9] !== 50) return null;
             A = true
         }
-        let T = Math.max(15, M - 3);
-        while ((T = k.indexOf(13, T)) !== -1 && T <= U - 4) {
-            if (k[T + 1] === 10 && k[T + 2] === 13 && k[T + 3] === 10) {
+        let U = Math.max(15, W - 3);
+        while ((U = T.indexOf(13, U)) !== -1 && U <= S - 4) {
+            if (T[U + 1] === 10 && T[U + 2] === 13 && T[U + 3] === 10) {
                 x.releaseLock();
                 return a
             }
-            T++
+            U++
         }
     }
     return null
 };
-const G = new Uint8Array([33, 18, 164, 66]);
-const ne = (...r) => {
-    let n = 0, e = 0, t = 0;
-    for (; e < r.length; e++) n += r[e].length;
+const J = new Uint8Array([33, 18, 164, 66]);
+const se = (...e) => {
+    let n = 0, t = 0, r = 0;
+    for (; t < e.length; t++) n += e[t].length;
     const s = new Uint8Array(n);
-    for (e = 0; e < r.length; e++) {
-        s.set(r[e], t);
-        t += r[e].length
+    for (t = 0; t < e.length; t++) {
+        s.set(e[t], r);
+        r += e[t].length
     }
     return s
 };
-const H = (r, n) => {
-    const e = n.length, t = new Uint8Array(4 + e + (4 - e % 4) % 4);
-    t[0] = r >> 8, t[1] = r & 255, t[2] = e >> 8, t[3] = e & 255, t.set(n, 4);
-    return t
+const $ = (e, n) => {
+    const t = n.length, r = new Uint8Array(4 + t + (4 - t % 4) % 4);
+    r[0] = e >> 8, r[1] = e & 255, r[2] = t >> 8, r[3] = t & 255, r.set(n, 4);
+    return r
 };
-const B = (r, n, e) => {
-    const t = ne(...e), s = t.length, o = new Uint8Array(20 + s);
-    o[0] = r >> 8, o[1] = r & 255, o[2] = s >> 8, o[3] = s & 255, o.set(G, 4), o.set(n, 8), o.set(t, 20);
+const N = (e, n, t) => {
+    const r = se(...t), s = r.length, o = new Uint8Array(20 + s);
+    o[0] = e >> 8, o[1] = e & 255, o[2] = s >> 8, o[3] = s & 255, o.set(J, 4), o.set(n, 8), o.set(r, 20);
     return o
 };
-const Pe = (r, n) => {
-    const e = new Uint8Array(8);
-    e[1] = 1;
-    const t = n ^ 8466;
-    e[2] = t >> 8, e[3] = t & 255;
+const qe = (e, n) => {
+    const t = new Uint8Array(8);
+    t[1] = 1;
+    const r = n ^ 8466;
+    t[2] = r >> 8, t[3] = r & 255;
     let s = 0, o = 0;
-    for (let l = 0; l < r.length; l++) {
-        const c = r.charCodeAt(l);
-        if (c === 46) {
-            e[4 + s] = o ^ G[s++];
+    for (let l = 0; l < e.length; l++) {
+        const i = e.charCodeAt(l);
+        if (i === 46) {
+            t[4 + s] = o ^ J[s++];
             o = 0
-        } else {o = o * 10 + (c - 48)}
+        } else {o = o * 10 + (i - 48)}
     }
-    e[4 + s] = o ^ G[s];
-    return e
-};
-const Ie = r => {
-    if (r.length < 20 || G.some((t, s) => r[4 + s] !== t)) return null;
-    const n = r[2] << 8 | r[3], e = {};
-    for (let t = 20; t + 4 <= 20 + n;) {
-        const s = r[t] << 8 | r[t + 1], o = r[t + 2] << 8 | r[t + 3];
-        if (t + 4 + o > r.length) break;
-        e[s] = r.subarray(t + 4, t + 4 + o);
-        t += 4 + o + (4 - o % 4) % 4
-    }
-    return {type: r[0] << 8 | r[1], attrs: e, tid: r.slice(8, 20)}
-};
-const pe = r => r?.length >= 4 ? (r[2] & 7) * 100 + r[3] : 0;
-const Oe = async (r, n) => {
-    const e = r.length, t = new Uint8Array(e + 24);
-    t.set(r);
-    const s = (r[2] << 8 | r[3]) + 24;
-    t[2] = s >> 8, t[3] = s & 255;
-    const o = new Uint8Array(await crypto.subtle.sign("HMAC", n, t.subarray(0, e)));
-    t[e] = 0, t[e + 1] = 8, t[e + 2] = 0, t[e + 3] = 20, t.set(o, e + 4);
+    t[4 + s] = o ^ J[s];
     return t
 };
-const He = async (r, n) => {
-    let e = n && n.length ? [n] : [];
-    let t = n ? n.length : 0;
+const Ge = e => {
+    if (e.length < 20 || J.some((r, s) => e[4 + s] !== r)) return null;
+    const n = e[2] << 8 | e[3], t = {};
+    for (let r = 20; r + 4 <= 20 + n;) {
+        const s = e[r] << 8 | e[r + 1], o = e[r + 2] << 8 | e[r + 3];
+        if (r + 4 + o > e.length) break;
+        t[s] = e.subarray(r + 4, r + 4 + o);
+        r += 4 + o + (4 - o % 4) % 4
+    }
+    return {type: e[0] << 8 | e[1], attrs: t, tid: e.slice(8, 20)}
+};
+const we = e => e?.length >= 4 ? (e[2] & 7) * 100 + e[3] : 0;
+const Je = async (e, n) => {
+    const t = e.length, r = new Uint8Array(t + 24);
+    r.set(e);
+    const s = (e[2] << 8 | e[3]) + 24;
+    r[2] = s >> 8, r[3] = s & 255;
+    const o = new Uint8Array(await crypto.subtle.sign("HMAC", n, r.subarray(0, t)));
+    r[t] = 0, r[t + 1] = 8, r[t + 2] = 0, r[t + 3] = 20, r.set(o, t + 4);
+    return r
+};
+const Ye = async (e, n) => {
+    let t = n && n.length ? [n] : [];
+    let r = n ? n.length : 0;
     const s = async () => {
-        const {done: l, value: c} = await r.read();
+        const {done: l, value: i} = await e.read();
         if (l) throw new Error;
-        e.push(c);
-        t += c.length
+        t.push(i);
+        r += i.length
     };
     const o = () => {
-        if (e.length === 1) return e[0];
-        const l = new Uint8Array(t);
-        let c = 0;
-        for (let i = 0; i < e.length; i++) {
-            l.set(e[i], c);
-            c += e[i].length
+        if (t.length === 1) return t[0];
+        const l = new Uint8Array(r);
+        let i = 0;
+        for (let c = 0; c < t.length; c++) {
+            l.set(t[c], i);
+            i += t[c].length
         }
-        e = [l];
+        t = [l];
         return l
     };
     try {
-        while (t < 20) await s();
+        while (r < 20) await s();
         let l = o();
         if (l[4] !== 33 || l[5] !== 18 || l[6] !== 164 || l[7] !== 66) return null;
-        const c = 20 + (l[2] << 8 | l[3]);
-        if (c > 8192) return null;
-        while (t < c) await s();
+        const i = 20 + (l[2] << 8 | l[3]);
+        if (i > 8192) return null;
+        while (r < i) await s();
         l = o();
-        return [Ie(l.subarray(0, c)), t > c ? l.subarray(c) : null]
+        return [Ge(l.subarray(0, i)), r > i ? l.subarray(i) : null]
     } catch {return null}
 };
-const he = async r => new Uint8Array(await crypto.subtle.digest("MD5", F.encode(r)));
-const de = async ({hostname: r, port: n, username: e, password: t}, {addrType: s, port: o, addrBytes: l}, c = false) => {
-    let i = ee(s, l);
-    if (s === 2) {i = De(i).catch(() => null)} else if (s === 3) return null;
+const ye = async e => new Uint8Array(await crypto.subtle.digest("MD5", B.encode(e)));
+const ge = async ({hostname: e, port: n, username: t, password: r}, {addrType: s, port: o, addrBytes: l}, i = false) => {
+    let c = te(s, l);
+    if (s === 2) {c = rt(c).catch(() => null)} else if (s === 3) return null;
     let u = null, a = null, h = null;
     let y = null, d = null, m = null, w = false, x = null;
-    const k = () => {
+    const T = () => {
         w = true;
         if (x !== null) clearTimeout(x), x = null;
         [u, a].forEach(f => {try {f?.close()} catch {}});
         [d, y].forEach(f => {try {f?.releaseLock()} catch {}})
     };
-    const U = () => {
-        const f = c ? {secureTransport: "on", allowHalfOpen: false} : void 0;
-        const b = ce({hostname: r, port: n}, f);
-        return V(r, n, f, b).catch(p => {
+    const S = () => {
+        const f = i ? {secureTransport: "on", allowHalfOpen: false} : void 0;
+        const b = ce({hostname: e, port: n}, f);
+        return _(e, n, f, b).catch(p => {
             try {b.close()} catch {}
             throw p
         })
     };
     const A = () => crypto.getRandomValues(new Uint8Array(12));
-    const g = (f, b) => f?.length === b?.length && f.every((p, S) => p === b[S]);
-    const $ = f => {
+    const g = (f, b) => f?.length === b?.length && f.every((p, k) => p === b[k]);
+    const v = f => {
         let b = "";
         for (let p = 0; p < f.length; p++) b += f[p].toString(16).padStart(2, "0");
         return b
     };
-    const M = async (f, b, p = null, S = null) => {
-        const v = $(b), R = S?.get(v);
-        if (R) {
-            S.delete(v);
-            return [R, p]
+    const W = async (f, b, p = null, k = null) => {
+        const z = v(b), C = k?.get(z);
+        if (C) {
+            k.delete(z);
+            return [C, p]
         }
         let L = p;
         for (; ;) {
-            const N = await He(f, L);
-            if (!N) throw new Error;
-            const [z, j] = N;
-            L = j;
-            if (g(z.tid, b)) return [z, L];
-            if (S) S.set($(z.tid), z)
+            const j = await Ye(f, L);
+            if (!j) throw new Error;
+            const [D, Q] = j;
+            L = Q;
+            if (g(D.tid, b)) return [D, L];
+            if (k) k.set(v(D.tid), D)
         }
     };
-    const T = new Map;
-    const C = async f => {
-        const [b, p] = await M(d, f, m, T);
+    const U = new Map;
+    const E = async f => {
+        const [b, p] = await W(d, f, m, U);
         m = p;
         return b
     };
-    const _ = f => new Uint8Array([f >>> 24 & 255, f >>> 16 & 255, f >>> 8 & 255, f & 255]);
-    const E = f => f?.length >= 4 ? f[0] * 16777216 + f[1] * 65536 + f[2] * 256 + f[3] : 0;
-    let P = null, W = [], I = "";
-    const O = f => P ? Oe(f, P) : f;
+    const q = f => new Uint8Array([f >>> 24 & 255, f >>> 16 & 255, f >>> 8 & 255, f & 255]);
+    const P = f => f?.length >= 4 ? f[0] * 16777216 + f[1] * 65536 + f[2] * 256 + f[3] : 0;
+    let O = null, R = [], H = "";
+    const I = f => O ? Je(f, O) : f;
     const K = async f => {
         const b = f?.attrs?.[21]?.slice();
-        if (!e || !b?.length) return false;
-        const p = f.attrs?.[20]?.length ? Z.decode(f.attrs[20]) : I;
+        if (!t || !b?.length) return false;
+        const p = f.attrs?.[20]?.length ? ee.decode(f.attrs[20]) : H;
         if (!p) return false;
-        if (p !== I || !P) {
-            const S = await he(`${e}:${p}:${t}`);
-            P = await crypto.subtle.importKey("raw", S, {name: "HMAC", hash: "SHA-1"}, false, ["sign"])
+        if (p !== H || !O) {
+            const k = await ye(`${t}:${p}:${r}`);
+            O = await crypto.subtle.importKey("raw", k, {name: "HMAC", hash: "SHA-1"}, false, ["sign"])
         }
-        I = p;
-        W = [H(6, F.encode(e)), H(20, F.encode(I)), H(21, b)];
+        H = p;
+        R = [$(6, B.encode(t)), $(20, B.encode(H)), $(21, b)];
         return true
     };
-    const be = async (f, b, p) => {
-        for (let S = 0; S < 2; S++) {
+    const Ae = async (f, b, p) => {
+        for (let k = 0; k < 2; k++) {
             if (w) throw new Error;
-            const v = A();
-            await y.write(await O(B(f, v, [...b, ...W])));
-            const R = await C(v);
-            if (R?.type === p) return R;
-            const L = pe(R?.attrs?.[9]);
-            if ((L === 401 || L === 438) && await K(R)) continue;
+            const z = A();
+            await y.write(await I(N(f, z, [...b, ...R])));
+            const C = await E(z);
+            if (C?.type === p) return C;
+            const L = we(C?.attrs?.[9]);
+            if ((L === 401 || L === 438) && await K(C)) continue;
             throw new Error
         }
         throw new Error
     };
     try {
-        const f = U();
-        h = U().then(D => {
-            a = D;
-            if (w) try {D.close()} catch {}
-            return D
+        const f = S();
+        h = S().then(F => {
+            a = F;
+            if (w) {try {F.close()} catch {}}
+            return F
         });
         h.catch(() => {});
         u = await f;
         y = u.writable.getWriter(), d = u.readable.getReader();
         let b = A();
-        await y.write(B(3, b, [H(25, new Uint8Array([6, 0, 0, 0]))]));
-        let p = await C(b);
+        await y.write(N(3, b, [$(25, new Uint8Array([6, 0, 0, 0]))]));
+        let p = await E(b);
         if (!p) throw new Error;
-        const S = await i;
-        if (!S) throw new Error;
-        const v = H(18, Pe(S, o));
-        let R = null, L = null, N = null, z = null;
-        if (p.type === 275 && e && pe(p.attrs[9]) === 401) {
-            const D = Z.decode(p.attrs[20] ?? []), X = p.attrs[21] ?? [];
-            const me = await he(`${e}:${D}:${t}`);
-            P = await crypto.subtle.importKey("raw", me, {name: "HMAC", hash: "SHA-1"}, false, ["sign"]);
-            I = D;
-            W = [H(6, F.encode(e)), H(20, F.encode(D)), H(21, X)];
-            const le = A();
-            R = A(), L = A();
-            const [xe, Ae, Te] = await Promise.all([O(B(3, le, [H(25, new Uint8Array([6, 0, 0, 0])), ...W])), O(B(8, R, [v, ...W])), O(B(10, L, [v, ...W]))]);
-            N = Ae, z = Te;
-            await y.write(ne(xe, N, z));
-            p = await C(le)
+        const k = await c;
+        if (!k) throw new Error;
+        const z = $(18, qe(k, o));
+        let C = null, L = null, j = null, D = null;
+        if (p.type === 275 && t && we(p.attrs[9]) === 401) {
+            const F = ee.decode(p.attrs[20] ?? []), X = p.attrs[21] ?? [];
+            const Ue = await ye(`${t}:${F}:${r}`);
+            O = await crypto.subtle.importKey("raw", Ue, {name: "HMAC", hash: "SHA-1"}, false, ["sign"]);
+            H = F;
+            R = [$(6, B.encode(t)), $(20, B.encode(F)), $(21, X)];
+            const ie = A();
+            C = A(), L = A();
+            const [Te, Se, Me] = await Promise.all([I(N(3, ie, [$(25, new Uint8Array([6, 0, 0, 0])), ...R])), I(N(8, C, [z, ...R])), I(N(10, L, [z, ...R]))]);
+            j = Se, D = Me;
+            await y.write(se(Te, j, D));
+            p = await E(ie)
         } else if (p.type === 259) {
-            R = A(), L = A();
-            [N, z] = await Promise.all([O(B(8, R, [v, ...W])), O(B(10, L, [v, ...W]))]);
-            await y.write(ne(N, z))
+            C = A(), L = A();
+            [j, D] = await Promise.all([I(N(8, C, [z, ...R])), I(N(10, L, [z, ...R]))]);
+            await y.write(se(j, D))
         } else {throw new Error}
         if (p?.type !== 259) throw new Error;
-        let j = E(p.attrs?.[13]) || 600;
-        p = await C(R);
+        let Q = P(p.attrs?.[13]) || 600;
+        p = await E(C);
         if (p?.type !== 264) throw new Error;
-        p = await C(L);
+        p = await E(L);
         if (p?.type !== 266 || !p.attrs[42]) throw new Error;
         await h;
-        const se = a.writable.getWriter(), ae = a.readable.getReader();
+        const ae = a.writable.getWriter(), oe = a.readable.getReader();
         b = A();
-        await se.write(await O(B(11, b, [H(42, p.attrs[42]), ...W])));
-        let oe;
-        [p, oe] = await M(ae, b);
+        await ae.write(await I(N(11, b, [$(42, p.attrs[42]), ...R])));
+        let le;
+        [p, le] = await W(oe, b);
         if (p?.type !== 267) throw new Error;
-        ae.releaseLock(), se.releaseLock();
-        let q = 0;
-        const J = async () => {
+        oe.releaseLock(), ae.releaseLock();
+        let G = 0;
+        const Y = async () => {
             if (w) return;
             try {
-                const D = await be(4, [H(13, _(j))], 260), X = E(D.attrs?.[13]);
+                const F = await Ae(4, [$(13, q(Q))], 260), X = P(F.attrs?.[13]);
                 if (X === 0) throw new Error;
-                if (X > 0) j = X;
-                q = 0;
-                if (!w) x = setTimeout(J, Math.min(3e5, Math.max(5e3, Math.floor(j * 500))))
+                if (X > 0) Q = X;
+                G = 0;
+                if (!w) x = setTimeout(Y, Math.min(3e5, Math.max(5e3, Math.floor(Q * 500))))
             } catch {
                 if (w) return;
-                q++, q <= 3 ? x = setTimeout(J, q * 2e3) : k()
+                G++, G <= 3 ? x = setTimeout(Y, G * 2e3) : T()
             }
         };
-        if (!w) x = setTimeout(J, Math.min(3e5, Math.max(5e3, Math.floor(j * 500))));
-        return {readable: a.readable, writable: a.writable, close: k, extra: oe}
+        if (!w) x = setTimeout(Y, Math.min(3e5, Math.max(5e3, Math.floor(Q * 500))));
+        return {readable: a.readable, writable: a.writable, close: T, extra: le}
     } catch {
-        k();
+        T();
         return null
     }
 };
-const $e = r => {
-    const n = r.length;
-    const e = {success: false, needMore: false, handshake: null, parsedRequest: null};
-    if (n < 17) return e.needMore = true, e;
-    for (let u = 0; u < 16; u++) if (r[u + 1] !== We[u]) return e;
-    if (n < 18) return e.needMore = true, e;
-    const t = 19 + r[17];
-    if (n < t + 4) return e.needMore = true, e;
-    const s = r[t + 2];
-    const o = s === 2 ? r[t + 3] : s === 1 ? 4 : s === 3 ? 16 : 0;
-    if (!o) return e;
-    const l = s === 2 ? t + 4 : t + 3, c = l + o;
-    if (n < c) return e.needMore = true, e;
-    const i = r[t] << 8 | r[t + 1];
-    e.handshake = new Uint8Array([r[0], 0]);
-    e.success = true;
-    e.parsedRequest = {addrType: s, addrBytes: r.subarray(l, c), dataOffset: c, port: i, isDns: i === 53};
-    return e
+const Ze = e => {
+    const n = e.length;
+    const t = {success: false, needMore: false, handshake: null, parsedRequest: null};
+    if (n < 17) return t.needMore = true, t;
+    if (!(e[1] === Ce && e[2] === Le && e[3] === Ee && e[4] === Pe && e[5] === Oe && e[6] === He && e[7] === Ie && e[8] === $e && e[9] === ve && e[10] === ze && e[11] === De && e[12] === Fe && e[13] === Be && e[14] === Ne && e[15] === je && e[16] === Qe)) {return t}
+    if (n < 18) return t.needMore = true, t;
+    const r = 19 + e[17];
+    if (n < r + 4) return t.needMore = true, t;
+    const s = e[r + 2];
+    const o = s === 2 ? e[r + 3] : s === 1 ? 4 : s === 3 ? 16 : 0;
+    if (!o) return t;
+    const l = s === 2 ? r + 4 : r + 3, i = l + o;
+    if (n < i) return t.needMore = true, t;
+    const c = e[r] << 8 | e[r + 1];
+    t.handshake = new Uint8Array([e[0], 0]);
+    t.success = true;
+    t.parsedRequest = {addrType: s, addrBytes: e.subarray(l, i), dataOffset: i, port: c, isDns: c === 53};
+    return t
 };
-const ve = {headers: {Accept: "application/dns-json"}}, ze = {"content-type": "application/dns-message"};
-const we = async (r, n) => {
+const et = {headers: {Accept: "application/dns-json"}}, tt = {"content-type": "application/dns-message"};
+const be = async (e, n) => {
     try {
-        const e = await fetch(`${ue}?name=${encodeURIComponent(r)}&type=${n}`, ve);
-        if (!e.ok) return null;
-        const t = await e.json();
-        const s = t.Answer || t.answer;
+        const t = await fetch(`${pe}?name=${encodeURIComponent(e)}&type=${n}`, et);
+        if (!t.ok) return null;
+        const r = await t.json();
+        const s = r.Answer || r.answer;
         if (!s || s.length === 0) return null;
         return s
     } catch {return null}
 };
-const De = async r => {
-    const n = await we(r, "A");
+const rt = async e => {
+    const n = await be(e, "A");
     if (!n) return null;
-    let e = null;
-    for (let t = 0, s = n.length; t < s; t++) if (n[t].type === 1 && n[t].data) {
-        e = n[t].data;
+    let t = null;
+    for (let r = 0, s = n.length; r < s; r++) if (n[r].type === 1 && n[r].data) {
+        t = n[r].data;
         break
     }
-    return e
+    return t
 };
-const Fe = async r => {
-    if (r.byteLength < 2) return null;
-    const n = r.subarray(2);
-    let e;
+const nt = async e => {
+    if (e.byteLength < 2) return null;
+    const n = e.subarray(2);
+    let t;
     try {
-        const o = await fetch(ue, {method: "POST", headers: ze, body: n});
+        const o = await fetch(pe, {method: "POST", headers: tt, body: n});
         if (!o.ok) return null;
-        e = await o.arrayBuffer()
+        t = await o.arrayBuffer()
     } catch {return null}
-    const t = e.byteLength;
-    const s = new Uint8Array(2 + t);
-    s[0] = t >> 8 & 255, s[1] = t & 255;
-    s.set(new Uint8Array(e), 2);
+    const r = t.byteLength;
+    const s = new Uint8Array(2 + r);
+    s[0] = r >> 8 & 255, s[1] = r & 255;
+    s.set(new Uint8Array(t), 2);
     return s
 };
-const Be = async r => {
-    const n = await we(r, "TXT");
+const st = async e => {
+    const n = await be(e, "TXT");
     if (!n) return null;
-    let e, t = 0, s = n.length;
-    for (; t < s; t++) if (n[t].type === 16) {
-        e = n[t].data;
+    let t, r = 0, s = n.length;
+    for (; r < s; r++) if (n[r].type === 16) {
+        t = n[r].data;
         break
     }
-    if (!e) return null;
-    if (e.charCodeAt(0) === 34 && e.charCodeAt(e.length - 1) === 34) e = e.slice(1, -1);
-    const o = e.split(/,|\\010|\n/), l = [];
-    for (t = 0, s = o.length; t < s; t++) {
-        const c = o[t].trim();
-        if (c) l.push(c)
+    if (!t) return null;
+    if (t.charCodeAt(0) === 34 && t.charCodeAt(t.length - 1) === 34) t = t.slice(1, -1);
+    const o = t.split(/,|\\010|\n/), l = [];
+    for (r = 0, s = o.length; r < s; r++) {
+        const i = o[r].trim();
+        if (i) l.push(i)
     }
     return l.length ? l : null
 };
-const Ne = /william|fxpip|hhtxt/;
-const je = async (r, n) => {
-    if (n || Ne.test(r)) {
-        const s = await Be(r);
+const at = /william|fxpip|hhtxt/;
+const ot = async (e, n) => {
+    if (n || at.test(e)) {
+        const s = await st(e);
         if (!s || s.length === 0) return null;
-        const [o, l] = te(s[Math.random() * s.length | 0], 443);
-        return V(o, l)
+        const [o, l] = re(s[Math.random() * s.length | 0], 443);
+        return _(o, l)
     }
-    const [e, t] = te(r, 443);
-    return V(e, t)
+    const [t, r] = re(e, 443);
+    return _(t, r)
 };
-const Qe = new Map([[0, async ({addrType: r, port: n, addrBytes: e}) => V(ee(r, e), n)], [1, async ({addrType: r, port: n, addrBytes: e}, t) => Ce(r, n, t, e)], [2, async ({addrType: r, port: n, addrBytes: e}, t) => fe(r, n, t, e)], [6, async ({addrType: r, port: n, addrBytes: e}, t) => fe(r, n, t, e, true)], [5, async (r, n) => de(n, r)], [7, async (r, n) => de(n, r, true)], [3, async (r, n, e) => je(n, e)]]);
-const ye = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gturn|turnall|gturns|turnsall|s5|socks|http|https|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
-const Ve = async (r, n) => {
-    let e = n.url, t = e.slice(e.indexOf("/", 10) + 1), s = t.length, o = [], l;
-    const c = t.charCodeAt(s - 1);
-    if (c === 47 || c === 61) t = t.slice(0, s - 1);
-    const i = n.cf?.colo;
-    const u = i ? `${i.toLowerCase()}.proxy.zjcloud.us.ci` : Y;
-    if (t.length < 6) {o.push({type: 0}, {type: 3, param: u}, {type: 3, param: Y})} else {
+const lt = new Map([[0, async ({addrType: e, port: n, addrBytes: t}) => _(te(e, t), n)], [1, async ({addrType: e, port: n, addrBytes: t}, r) => Ke(e, n, r, t)], [2, async ({addrType: e, port: n, addrBytes: t}, r) => de(e, n, r, t)], [6, async ({addrType: e, port: n, addrBytes: t}, r) => de(e, n, r, t, true)], [5, async (e, n) => ge(n, e)], [7, async (e, n) => ge(n, e, true)], [3, async (e, n, t) => ot(n, t)]]);
+const me = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gturn|turnall|gturns|turnsall|s5|socks|http|https|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
+const it = async (e, n) => {
+    let t = n.url, r = t.slice(t.indexOf("/", 10) + 1), s = r.length, o = [], l;
+    const i = r.charCodeAt(s - 1);
+    if (i === 47 || i === 61) r = r.slice(0, s - 1);
+    const c = n.cf?.colo;
+    const u = c ? `${c.toLowerCase()}.proxy.zjcloud.us.ci` : Z;
+    if (r.length < 6) {o.push({type: 0}, {type: 3, param: u}, {type: 3, param: Z})} else {
         const a = Object.create(null);
-        ye.lastIndex = 0;
+        me.lastIndex = 0;
         let h;
-        while (h = ye.exec(t)) {a[(h[1] || h[3]).toLowerCase()] = h[2] ? h[2].charCodeAt(h[2].length - 1) === 61 ? h[2].slice(0, -1) : h[2] : true}
+        while (h = me.exec(r)) {a[(h[1] || h[3]).toLowerCase()] = h[2] ? h[2].charCodeAt(h[2].length - 1) === 61 ? h[2].slice(0, -1) : h[2] : true}
         if (a.speed) l = a.speed;
         const y = a.gs5 || a.s5all || a.s5 || a.socks, d = a.ghttp || a.httpall || a.http, m = a.ghttps || a.httpsall || a.https, w = a.gturn || a.turnall || a.turn, x = a.gturns || a.turnsall || a.turns;
-        const k = !!(a.gs5 || a.s5all || a.ghttp || a.httpall || a.ghttps || a.httpsall || a.gturn || a.turnall || a.gturns || a.turnsall || a.proxyall || a.globalproxy || a.global);
-        if (!k) o.push({type: 0});
-        const U = (A, g, $) => {
+        const T = !!(a.gs5 || a.s5all || a.ghttp || a.httpall || a.ghttps || a.httpsall || a.gturn || a.turnall || a.gturns || a.turnsall || a.proxyall || a.globalproxy || a.global);
+        if (!T) o.push({type: 0});
+        const S = (A, g, v) => {
             if (!A) return;
-            const M = decodeURIComponent(A).split(",").filter(Boolean);
-            for (let T = 0; T < M.length; T++) o.push($ ? {type: g, param: M[T], txt: $} : {type: g, param: g === 1 || g === 2 || g === 5 || g === 6 || g === 7 ? Le(M[T]) : M[T]})
+            const W = decodeURIComponent(A).split(",").filter(Boolean);
+            for (let U = 0; U < W.length; U++) o.push(v ? {type: g, param: W[U], txt: v} : {type: g, param: g === 1 || g === 2 || g === 5 || g === 6 || g === 7 ? _e(W[U]) : W[U]})
         };
-        for (let A = 0; A < ie.length; A++) {
-            const g = ie[A];
-            U(g === "socks" ? y : g === "http" ? d : g === "https" ? m : g === "turn" ? w : x, g === "socks" ? 1 : g === "http" ? 2 : g === "https" ? 6 : g === "turn" ? 5 : 7)
+        for (let A = 0; A < fe.length; A++) {
+            const g = fe[A];
+            S(g === "socks" ? y : g === "http" ? d : g === "https" ? m : g === "turn" ? w : x, g === "socks" ? 1 : g === "http" ? 2 : g === "https" ? 6 : g === "turn" ? 5 : 7)
         }
-        if (k) {if (!o.length) o.push({type: 0})} else {
-            U(a.ip, 3), U(a.txtip, 3, true);
-            o.push({type: 3, param: u}, {type: 3, param: Y})
+        if (T) {if (!o.length) o.push({type: 0})} else {
+            S(a.ip, 3), S(a.txtip, 3, true);
+            o.push({type: 3, param: u}, {type: 3, param: Z})
         }
     }
     for (let a = 0; a < o.length; a++) {
         try {
-            const h = Qe.get(o[a].type);
-            const y = await (h?.(r, o[a].param, o[a].txt));
+            const h = lt.get(o[a].type);
+            const y = await (h?.(e, o[a].param, o[a].txt));
             if (y) return {socket: y, speed: l}
         } catch {}
     }
     return null
 };
-const Ke = async (r, n, e, t) => {
-    const s = parseFloat(t), o = s > 0;
-    let l = Ue, c = Me, i = Se;
+const ct = async (e, n, t, r) => {
+    const s = parseFloat(r), o = s > 0;
+    let l = ke, i = Re, c = We;
     if (o) {
-        i = s > 256 ? Number.MAX_SAFE_INTEGER : s * 1048576;
-        let E = l, P = Infinity, W = Infinity;
-        for (let I = 262144; I <= 524288; I += 65536) {
-            const O = Math.max(2, Math.round(I * 1e3 / i)), K = Math.abs(I * 1e3 / O - i);
-            if (K < W || K === W && O < P) E = I, P = O, W = K
+        c = s > 256 ? Number.MAX_SAFE_INTEGER : s * 1048576;
+        let P = l, O = Infinity, R = Infinity;
+        for (let H = 262144; H <= 524288; H += 65536) {
+            const I = Math.max(2, Math.round(H * 1e3 / c)), K = Math.abs(H * 1e3 / I - c);
+            if (K < R || K === R && I < O) P = H, O = I, R = K
         }
-        l = E, c = P
+        l = P, i = O
     }
-    const u = l - Q, a = Q << 1;
-    let h = new Uint8Array(l), y = new ArrayBuffer(Q);
-    let d = 0, m = 0, w = 0, x = null, k = null, U = false;
-    let A = false, g = false, $ = true, M, T;
-    const C = () => {
-        if (U) return A = true;
-        $ = d < a;
+    const u = l - V, a = V << 1;
+    let h = new Uint8Array(l), y = new ArrayBuffer(V);
+    let d = 0, m = 0, w = 0, x = null, T = null, S = false;
+    let A = false, g = false, v = true, W, U;
+    const E = () => {
+        if (S) return A = true;
+        v = d < a;
         if (d > 0) n.send(h.subarray(0, d)), d = 0;
-        A = false, g = false, x && (clearTimeout(x), x = null), k?.(), k = null
+        A = false, g = false, x && (clearTimeout(x), x = null), T?.(), T = null
     };
-    const _ = r.getReader({mode: "byob"});
+    const q = e.getReader({mode: "byob"});
     try {
         while (true) {
             if (d > 0 && g) {
-                ({done: M, value: T} = await _.read(new Uint8Array(y, 0, Q)));
-                h.set(T, d), y = T.buffer
+                ({done: W, value: U} = await q.read(new Uint8Array(y, 0, V)));
+                h.set(U, d), y = U.buffer
             } else {
-                U = d > 0;
-                ({done: M, value: T} = await _.read(new Uint8Array(h.buffer, d, Q)));
-                U = false, h = new Uint8Array(T.buffer)
+                S = d > 0;
+                ({done: W, value: U} = await q.read(new Uint8Array(h.buffer, d, V)));
+                S = false, h = new Uint8Array(U.buffer)
             }
-            if (M) break;
-            const E = T.byteLength;
-            if (!E) {
-                A && C();
+            if (W) break;
+            const P = U.byteLength;
+            if (!P) {
+                A && E();
                 continue
             }
-            d += E, m += E;
-            if (A) {C()} else {
-                if ($ || E < 28672) {
+            d += P, m += P;
+            if (A) {E()} else {
+                if (v || P < 28672) {
                     if (!o) m = 0;
                     w = 2
-                } else if (m > i) w = c;
-                x ||= setTimeout(C, w), g = E < Q;
-                d > u && (m > i ? await new Promise(P => k = P) : C())
+                } else if (m > c) w = i;
+                x ||= setTimeout(E, w), g = P < V;
+                d > u && (m > c ? await new Promise(O => T = O) : E())
             }
         }
-    } catch {d = 0, e?.()} finally {U = false, C()}
+    } catch {d = 0, t?.()} finally {S = false, E()}
 };
-const Xe = (r, n) => {
-    const e = new Uint8Array(32768);
-    let t = 0, s = null, o = false;
+const ut = (e, n) => {
+    const t = new Uint8Array(32768);
+    let r = 0, s = null, o = false;
     const l = () => {
         if (o) return;
         o = true;
         s && (clearTimeout(s), s = null);
         n?.()
     };
-    const c = u => {try {r.write(u)} catch {l()}};
-    const i = () => {
+    const i = u => {try {e.write(u)} catch {l()}};
+    const c = () => {
         s && (clearTimeout(s), s = null);
-        if (!t || o) return;
-        const u = t;
-        t = 0, c(e.subarray(0, u))
+        if (!r || o) return;
+        const u = r;
+        r = 0, i(t.subarray(0, u))
     };
     return u => {
         if (o) return;
         const a = u.constructor === Uint8Array ? u : new Uint8Array(u), h = a.byteLength;
         if (!h) return;
-        t + h > 32768 && i(), e.set(a, t), t += h, t === 32768 ? i() : (s && clearTimeout(s), s = setTimeout(i, 2))
+        r + h > 32768 && c(), t.set(a, r), r += h, r === 32768 ? c() : (s && clearTimeout(s), s = setTimeout(c, 2))
     }
 };
-const _e = (r, n) => {
-    const e = new Array(256).fill(null);
-    let t = 0, s = 0, o = 0, l = false, c = false;
-    const i = () => {
-        if (c) return;
-        c = true;
-        for (let a = 0; a < 256; a++) e[a] = null;
+const ft = (e, n) => {
+    const t = new Array(256).fill(null);
+    let r = 0, s = 0, o = 0, l = false, i = false;
+    const c = () => {
+        if (i) return;
+        i = true;
+        for (let a = 0; a < 256; a++) t[a] = null;
         n?.()
     };
     const u = async () => {
-        if (c) return;
+        if (i) return;
         try {
-            while (o > 0 && !c) {
-                const a = e[t];
-                e[t] = null, t = t + 1 & 255, o--;
-                await r(a)
+            while (o > 0 && !i) {
+                const a = t[r];
+                t[r] = null, r = r + 1 & 255, o--;
+                await e(a)
             }
-        } catch {i()} finally {l = false}
+        } catch {c()} finally {l = false}
     };
     return a => {
-        if (c) return;
-        if (o === 256) return i();
-        e[s] = a, s = s + 1 & 255, o++;
+        if (i) return;
+        if (o === 256) return c();
+        t[s] = a, s = s + 1 & 255, o++;
         if (!l) l = true, queueMicrotask(u)
     }
 };
-const ge = async (r, n, e, t, s, o = false) => {
+const xe = async (e, n, t, r, s, o = false) => {
     n.needMore = false;
-    const l = $e(r);
-    if (l.handshake) t.send(l.handshake);
+    const l = Ze(e);
+    if (l.handshake) r.send(l.handshake);
     if (!l.success) return l.needMore ? n.needMore = true : s();
-    const c = l.parsedRequest;
-    const i = r.subarray(c.dataOffset);
-    if (c.isDns) {
-        const u = await Fe(i);
-        if (u?.byteLength) t.send(u);
+    const i = l.parsedRequest;
+    const c = e.subarray(i.dataOffset);
+    if (i.isDns) {
+        const u = await nt(c);
+        if (u?.byteLength) r.send(u);
         if (!o) return s()
     } else {
-        const u = await Ve(c, e);
+        const u = await it(i, t);
         if (!u) return s();
         n.tcpSocket = u.socket;
         const a = n.tcpSocket.writable.getWriter();
         n.rawTcpWriter = a;
-        if (i.byteLength) a.write(i);
-        if (n.tcpSocket.extra?.length) await t.send(n.tcpSocket.extra);
+        if (c.byteLength) a.write(c);
+        if (n.tcpSocket.extra?.length) await r.send(n.tcpSocket.extra);
         if (n.xwebPipeTo) return n.tcpWriter = h => a.write(h);
-        n.tcpWriter = Xe(a, s);
-        Ke(n.tcpSocket.readable, t, s, u.speed)
+        n.tcpWriter = ut(a, s);
+        ct(n.tcpSocket.readable, r, s, u.speed)
     }
 };
-const qe = async (r, n) => {
-    const e = n.headers.get("Referer");
-    const t = e || n.headers.get("sec-websocket-protocol");
+const pt = async (e, n) => {
+    const t = n.headers.get("Referer");
+    const r = t || n.headers.get("sec-websocket-protocol");
     let s = null;
-    if (e) {s = t.slice(n.headers.get("host").length)} else if (t) {s = t}
+    if (t) {s = r.slice(n.headers.get("host").length)} else if (r) {s = r}
     const o = s ? Uint8Array.fromBase64(s, {alphabet: "base64url"}) : null;
     const l = {tcpWriter: null, tcpSocket: null};
-    let c = null;
-    const i = () => {r.close(1011, "WebSocket is closed")};
+    let i = null;
+    const c = () => {e.close(1011, "WebSocket is closed")};
     const u = a => {
         if (l.tcpWriter) return l.tcpWriter(a);
-        return ge(o ? a : new Uint8Array(a), l, n, r, i, o !== null)
+        return xe(o ? a : new Uint8Array(a), l, n, e, c, o !== null)
     };
-    c = _e(u, i);
-    if (o) c(o);
-    r.addEventListener("message", a => (l.tcpWriter || c)(a.data));
-    r.addEventListener("error", i)
+    i = ft(u, c);
+    if (o) i(o);
+    e.addEventListener("message", a => (l.tcpWriter || i)(a.data));
+    e.addEventListener("error", c)
 };
-const Ge = {"Content-Type": "application/octet-stream", "grpc-status": "0", "X-Accel-Buffering": "no", "Cache-Control": "no-store"};
-const Je = async r => {
-    const n = r.body?.getReader({mode: "byob"});
+const ht = {"Content-Type": "application/octet-stream", "grpc-status": "0", "X-Accel-Buffering": "no", "Cache-Control": "no-store"};
+const dt = async e => {
+    const n = e.body?.getReader({mode: "byob"});
     if (!n) return new Response(null, {status: 400});
-    const e = {tcpWriter: null, tcpSocket: null, needMore: false, xwebPipeTo: true};
-    const t = new IdentityTransformStream({highWaterMark: 1024 * 1024}), s = new IdentityTransformStream({highWaterMark: 1024 * 1024 * 1024}), o = t.writable.getWriter();
-    const l = () => {if (e.xwebPipeTo) e.xwebPipeTo = false, n.cancel().catch(() => {}), o.close().catch(() => {})};
-    const c = {send(i) {if (i?.byteLength) return o.write(i)}};
+    const t = {tcpWriter: null, tcpSocket: null, needMore: false, xwebPipeTo: true};
+    const r = new IdentityTransformStream({highWaterMark: 1024 * 1024}), s = new IdentityTransformStream({highWaterMark: 1024 * 1024 * 1024}), o = r.writable.getWriter();
+    const l = () => {if (t.xwebPipeTo) {t.xwebPipeTo = false, n.cancel().catch(() => {}), o.close().catch(() => {})}};
+    const i = {send(c) {if (c?.byteLength) return o.write(c)}};
     (async () => {
-        let i = new Uint8Array(32768), u = new ArrayBuffer(8192), a = 0, h = 0, y = null, d, m;
+        let c = new Uint8Array(32768), u = new ArrayBuffer(8192), a = 0, h = 0, y = null, d, m;
         const w = () => {
-            if (a > 0 && e.tcpWriter && i) e.tcpWriter(i.subarray(0, a)), a = 0;
+            if (a > 0 && t.tcpWriter && c) t.tcpWriter(c.subarray(0, a)), a = 0;
             y && (clearTimeout(y), y = null)
         };
         try {
             while (true) {
-                if (a > 0 && e.tcpWriter) {
+                if (a > 0 && t.tcpWriter) {
                     ({done: d, value: m} = await n.read(new Uint8Array(u, 0, 8192)));
-                    i.set(m, a), u = m.buffer
+                    c.set(m, a), u = m.buffer
                 } else {
-                    ({done: d, value: m} = await n.read(new Uint8Array(i.buffer, a, 8192)));
-                    i = new Uint8Array(m.buffer)
+                    ({done: d, value: m} = await n.read(new Uint8Array(c.buffer, a, 8192)));
+                    c = new Uint8Array(m.buffer)
                 }
                 if (d) break;
                 const x = m.byteLength;
                 if (!x) continue;
                 a += x;
-                if (e.tcpWriter) {
+                if (t.tcpWriter) {
                     if (++h >= 8e3) {
                         w();
-                        await e.rawTcpWriter.ready;
-                        n.releaseLock(), e.rawTcpWriter.releaseLock(), e.xwebPipeTo = false, i = null, u = null;
-                        r.body.pipeThrough(s).pipeTo(e.tcpSocket.writable);
+                        await t.rawTcpWriter.ready;
+                        n.releaseLock(), t.rawTcpWriter.releaseLock(), t.xwebPipeTo = false, c = null, u = null;
+                        e.body.pipeThrough(s).pipeTo(t.tcpSocket.writable);
                         break
                     }
                     a > 24576 ? w() : (y && clearTimeout(y), y = setTimeout(w, 2))
                 } else {
-                    e.needMore = false;
-                    await ge(i.subarray(0, a), e, r, c, l);
-                    if (e.tcpSocket && e.xwebPipeTo && !e.downstreamPiped) {
-                        e.downstreamPiped = true, o.releaseLock();
-                        e.tcpSocket.readable.pipeTo(t.writable)
+                    t.needMore = false;
+                    await xe(c.subarray(0, a), t, e, i, l);
+                    if (t.tcpSocket && t.xwebPipeTo && !t.downstreamPiped) {
+                        t.downstreamPiped = true, o.releaseLock();
+                        t.tcpSocket.readable.pipeTo(r.writable)
                     }
-                    if (!e.needMore) a = 0
+                    if (!t.needMore) a = 0
                 }
             }
         } catch {a = 0, l()} finally {w()}
     })().catch(l);
-    return new Response(t.readable, {headers: Ge})
+    return new Response(r.readable, {headers: ht})
 };
 export default {
-    async fetch(r) {
-        if (r.method === "POST" && r.headers.get("content-type")?.startsWith("application/grpc")) return Je(r);
-        if (r.headers.get("Upgrade") === "websocket") {
-            const {0: n, 1: e} = new WebSocketPair;
-            e.accept({allowHalfOpen: true}), e.binaryType = "arraybuffer";
-            qe(e, r);
+    async fetch(e) {
+        if (e.method === "POST" && e.headers.get("content-type")?.startsWith("application/grpc")) return dt(e);
+        if (e.headers.get("Upgrade") === "websocket") {
+            const {0: n, 1: t} = new WebSocketPair;
+            t.accept({allowHalfOpen: true}), t.binaryType = "arraybuffer";
+            pt(t, e);
             return new Response(null, {status: 101, webSocket: n})
         }
-        return new Response(Re, {status: 200, headers: {"Content-Type": "text/html; charset=UTF-8"}})
+        return new Response(Ve, {status: 200, headers: {"Content-Type": "text/html; charset=UTF-8"}})
     }
 };

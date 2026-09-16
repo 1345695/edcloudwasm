@@ -351,7 +351,7 @@ const setDnsConnectCache = (hostname, result) => {
     }
     dnsConnectCache.set(hostname, result);
 };
-const hasV6 = dnsStrategyOrder.includes('ipv6'), hasV4 = dnsStrategyOrder.includes('ipv4'), canCheckGv = hasV6 && dnsStrategyOrder[0] !== 'ipv6' && dnsStrategyOrder[0] !== 'hostname', emptyDnsRes = {records: [], expires: 0};
+const hasV6 = dnsStrategyOrder.includes('ipv6'), hasV4 = dnsStrategyOrder.includes('ipv4'), canCheckGv = dnsStrategyOrder[0] !== 'ipv6' && dnsStrategyOrder[0] !== 'hostname', emptyDnsRes = {records: [], expires: 0};
 const dnsConnectResolve = async hostname => {
     const resolve = async (isV6) => {
         try {
@@ -374,7 +374,7 @@ const dnsConnectResolve = async hostname => {
         (hostname.charCodeAt(l - 9) | 32) === 118 && (hostname.charCodeAt(l - 10) | 32) === 101 && (hostname.charCodeAt(l - 11) | 32) === 108 && (hostname.charCodeAt(l - 12) | 32) === 103 &&
         (hostname.charCodeAt(l - 13) | 32) === 111 && (hostname.charCodeAt(l - 14) | 32) === 111 && (hostname.charCodeAt(l - 15) | 32) === 103 && (l === 15 || hostname.charCodeAt(l - 16) === 46);
     const [ipv6, ipv4] = await Promise.all([
-        hasV6 ? resolve(true) : emptyDnsRes,
+        (hasV6 || onlyV6) ? resolve(true) : emptyDnsRes,
         (hasV4 && !onlyV6) ? resolve(false) : emptyDnsRes
     ]);
     const hasRecord = ipv6.records.length || ipv4.records.length;

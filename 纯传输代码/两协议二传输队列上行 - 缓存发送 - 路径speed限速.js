@@ -34,8 +34,14 @@ const getCurrentColo = async () => {
         return '';
     }
 };
-const uuidBytes = Uint8Array.from(uuid.replaceAll('-', '').match(/../g), hex => parseInt(hex, 16)), hashBytes = new Uint8Array(56);
-for (let i = 0; i < 56; i++) hashBytes[i] = passWordSha224.charCodeAt(i);
+const _h = c => (c > 64 ? (c & 7) + 9 : c & 15);
+const _b = p => (_h(uuid.charCodeAt(p)) << 4) | _h(uuid.charCodeAt(p + 1));
+const U0 = _b(0), U1 = _b(2), U2 = _b(4), U3 = _b(6), U4 = _b(9), U5 = _b(11), U6 = _b(14), U7 = _b(16), U8 = _b(19), U9 = _b(21), U10 = _b(24), U11 = _b(26), U12 = _b(28), U13 = _b(30), U14 = _b(32), U15 = _b(34);
+const _c = i => passWordSha224.charCodeAt(i);
+const H0 = _c(0), H1 = _c(1), H2 = _c(2), H3 = _c(3), H4 = _c(4), H5 = _c(5), H6 = _c(6), H7 = _c(7), H8 = _c(8), H9 = _c(9), H10 = _c(10), H11 = _c(11), H12 = _c(12), H13 = _c(13),
+    H14 = _c(14), H15 = _c(15), H16 = _c(16), H17 = _c(17), H18 = _c(18), H19 = _c(19), H20 = _c(20), H21 = _c(21), H22 = _c(22), H23 = _c(23), H24 = _c(24), H25 = _c(25), H26 = _c(26), H27 = _c(27),
+    H28 = _c(28), H29 = _c(29), H30 = _c(30), H31 = _c(31), H32 = _c(32), H33 = _c(33), H34 = _c(34), H35 = _c(35), H36 = _c(36), H37 = _c(37), H38 = _c(38), H39 = _c(39), H40 = _c(40), H41 = _c(41),
+    H42 = _c(42), H43 = _c(43), H44 = _c(44), H45 = _c(45), H46 = _c(46), H47 = _c(47), H48 = _c(48), H49 = _c(49), H50 = _c(50), H51 = _c(51), H52 = _c(52), H53 = _c(53), H54 = _c(54), H55 = _c(55);
 const textEncoder = new TextEncoder, textDecoder = new TextDecoder;
 const binaryAddrToString = (addrType, addrBytes) => {
     if (addrType === 3) return textDecoder.decode(addrBytes);
@@ -108,7 +114,7 @@ const setDnsConnectCache = (hostname, result) => {
     }
     dnsConnectCache.set(hostname, result);
 };
-const hasV6 = dnsStrategyOrder.includes('ipv6'), hasV4 = dnsStrategyOrder.includes('ipv4'), canCheckGv = hasV6 && dnsStrategyOrder[0] !== 'ipv6' && dnsStrategyOrder[0] !== 'hostname', emptyDnsRes = {records: [], expires: 0};
+const hasV6 = dnsStrategyOrder.includes('ipv6'), hasV4 = dnsStrategyOrder.includes('ipv4'), canCheckGv = dnsStrategyOrder[0] !== 'ipv6' && dnsStrategyOrder[0] !== 'hostname', emptyDnsRes = {records: [], expires: 0};
 const dnsConnectResolve = async hostname => {
     const resolve = async (isV6) => {
         try {
@@ -131,7 +137,7 @@ const dnsConnectResolve = async hostname => {
         (hostname.charCodeAt(l - 9) | 32) === 118 && (hostname.charCodeAt(l - 10) | 32) === 101 && (hostname.charCodeAt(l - 11) | 32) === 108 && (hostname.charCodeAt(l - 12) | 32) === 103 &&
         (hostname.charCodeAt(l - 13) | 32) === 111 && (hostname.charCodeAt(l - 14) | 32) === 111 && (hostname.charCodeAt(l - 15) | 32) === 103 && (l === 15 || hostname.charCodeAt(l - 16) === 46);
     const [ipv6, ipv4] = await Promise.all([
-        hasV6 ? resolve(true) : emptyDnsRes,
+        (hasV6 || onlyV6) ? resolve(true) : emptyDnsRes,
         (hasV4 && !onlyV6) ? resolve(false) : emptyDnsRes
     ]);
     const hasRecord = ipv6.records.length || ipv4.records.length;
@@ -312,17 +318,10 @@ const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addr
 const parseProtocolChunk = (chunk) => {
     const len = chunk.length;
     const result = {success: false, needMore: false, handshake: null, parsedRequest: null};
-    let isVL = false;
-    if (len >= 17) {
-        isVL = true;
-        for (let i = 0; i < 16; i++) {
-            if (chunk[i + 1] !== uuidBytes[i]) {
-                isVL = false;
-                break;
-            }
-        }
-    }
-    if (isVL) {
+    if (len >= 17 &&
+        chunk[1] === U0 && chunk[2] === U1 && chunk[3] === U2 && chunk[4] === U3 && chunk[5] === U4 && chunk[6] === U5 && chunk[7] === U6 && chunk[8] === U7 &&
+        chunk[9] === U8 && chunk[10] === U9 && chunk[11] === U10 && chunk[12] === U11 && chunk[13] === U12 && chunk[14] === U13 && chunk[15] === U14 && chunk[16] === U15
+    ) {
         if (len < 18) return result.needMore = true, result;
         const offset = 19 + chunk[17];
         if (len < offset + 4) return result.needMore = true, result;
@@ -341,29 +340,28 @@ const parseProtocolChunk = (chunk) => {
             return result;
         }
     }
-    if (len >= 56) {
-        let isTJ = true;
-        for (let i = 0; i < 56; i++) {
-            if (chunk[i] !== hashBytes[i]) {
-                isTJ = false;
-                break;
-            }
-        }
-        if (isTJ) {
-            if (len < 60) return result.needMore = true, result;
-            const addrType = chunk[59];
-            const addrLen = addrType === 3 ? (60 < len ? chunk[60] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
-            if (addrLen === null) return result.needMore = true, result;
-            if (addrLen > 0) {
-                const addrOffset = addrType === 3 ? 61 : 60;
-                const dataOffset = addrOffset + addrLen + 4;
-                if (len < dataOffset) return result.needMore = true, result;
-                const portOffset = addrOffset + addrLen;
-                const port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
-                result.success = true;
-                result.parsedRequest = {addrType, addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
-                return result;
-            }
+    if (len >= 56 &&
+        chunk[0] === H0 && chunk[1] === H1 && chunk[2] === H2 && chunk[3] === H3 && chunk[4] === H4 && chunk[5] === H5 && chunk[6] === H6 && chunk[7] === H7 &&
+        chunk[8] === H8 && chunk[9] === H9 && chunk[10] === H10 && chunk[11] === H11 && chunk[12] === H12 && chunk[13] === H13 && chunk[14] === H14 && chunk[15] === H15 &&
+        chunk[16] === H16 && chunk[17] === H17 && chunk[18] === H18 && chunk[19] === H19 && chunk[20] === H20 && chunk[21] === H21 && chunk[22] === H22 && chunk[23] === H23 &&
+        chunk[24] === H24 && chunk[25] === H25 && chunk[26] === H26 && chunk[27] === H27 && chunk[28] === H28 && chunk[29] === H29 && chunk[30] === H30 && chunk[31] === H31 &&
+        chunk[32] === H32 && chunk[33] === H33 && chunk[34] === H34 && chunk[35] === H35 && chunk[36] === H36 && chunk[37] === H37 && chunk[38] === H38 && chunk[39] === H39 &&
+        chunk[40] === H40 && chunk[41] === H41 && chunk[42] === H42 && chunk[43] === H43 && chunk[44] === H44 && chunk[45] === H45 && chunk[46] === H46 && chunk[47] === H47 &&
+        chunk[48] === H48 && chunk[49] === H49 && chunk[50] === H50 && chunk[51] === H51 && chunk[52] === H52 && chunk[53] === H53 && chunk[54] === H54 && chunk[55] === H55
+    ) {
+        if (len < 60) return result.needMore = true, result;
+        const addrType = chunk[59];
+        const addrLen = addrType === 3 ? (60 < len ? chunk[60] : null) : addrType === 1 ? 4 : addrType === 4 ? 16 : -1;
+        if (addrLen === null) return result.needMore = true, result;
+        if (addrLen > 0) {
+            const addrOffset = addrType === 3 ? 61 : 60;
+            const dataOffset = addrOffset + addrLen + 4;
+            if (len < dataOffset) return result.needMore = true, result;
+            const portOffset = addrOffset + addrLen;
+            const port = (chunk[portOffset] << 8) | chunk[portOffset + 1];
+            result.success = true;
+            result.parsedRequest = {addrType, addrBytes: chunk.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
+            return result;
         }
     }
     return len < 56 ? (result.needMore = true, result) : result;

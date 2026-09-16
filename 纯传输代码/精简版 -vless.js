@@ -22,7 +22,9 @@ const getCurrentColo = async () => {
         return currentColo;
     }
 };
-const uuidBytes = Uint8Array.from(uuid.replaceAll('-', '').match(/../g), hex => parseInt(hex, 16));
+const _h = c => (c > 64 ? (c & 7) + 9 : c & 15);
+const _b = p => (_h(uuid.charCodeAt(p)) << 4) | _h(uuid.charCodeAt(p + 1));
+const U0 = _b(0), U1 = _b(2), U2 = _b(4), U3 = _b(6), U4 = _b(9), U5 = _b(11), U6 = _b(14), U7 = _b(16), U8 = _b(19), U9 = _b(21), U10 = _b(24), U11 = _b(26), U12 = _b(28), U13 = _b(30), U14 = _b(32), U15 = _b(34);
 const textDecoder = new TextDecoder;
 const createConnect = (hostname, port, socket = connect({hostname, port})) => socket.opened.then(() => socket);
 const concurrentConnect = (hostname, port) => {
@@ -153,7 +155,12 @@ const handleSession = async (chunk, state, request, writable, close) => {
     state.needMore = false;
     const len = chunk.length;
     if (len < 17) return state.needMore = true;
-    for (let i = 0; i < 16; i++) if (chunk[i + 1] !== uuidBytes[i]) return close();
+    if (!(
+        chunk[1] === U0 && chunk[2] === U1 && chunk[3] === U2 && chunk[4] === U3 && chunk[5] === U4 && chunk[6] === U5 && chunk[7] === U6 && chunk[8] === U7 &&
+        chunk[9] === U8 && chunk[10] === U9 && chunk[11] === U10 && chunk[12] === U11 && chunk[13] === U12 && chunk[14] === U13 && chunk[15] === U14 && chunk[16] === U15
+    )) {
+        return close();
+    }
     if (len < 18) return state.needMore = true;
     const offset = 19 + chunk[17];
     if (len < offset + 4) return state.needMore = true;
