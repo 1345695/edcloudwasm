@@ -22,7 +22,7 @@ const getCurrentColo = async () => {
         return currentColo;
     }
 };
-const uuidBytes = Uint8Array.from(uuid.replace(/-/g, "").match(/../g), hex => parseInt(hex, 16));
+const uuidBytes = Uint8Array.from(uuid.replaceAll('-', '').match(/../g), hex => parseInt(hex, 16));
 const textDecoder = new TextDecoder;
 const createConnect = (hostname, port, socket = connect({hostname, port})) => socket.opened.then(() => socket);
 const concurrentConnect = (hostname, port) => {

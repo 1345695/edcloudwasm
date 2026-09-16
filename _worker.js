@@ -351,6 +351,7 @@ const setDnsConnectCache = (hostname, result) => {
     }
     dnsConnectCache.set(hostname, result);
 };
+const hasV6 = dnsStrategyOrder.includes('ipv6'), hasV4 = dnsStrategyOrder.includes('ipv4'), canCheckGv = hasV6 && dnsStrategyOrder[0] !== 'ipv6' && dnsStrategyOrder[0] !== 'hostname', emptyDnsRes = {records: [], expires: 0};
 const dnsConnectResolve = async hostname => {
     const resolve = async (isV6) => {
         try {
@@ -363,12 +364,18 @@ const dnsConnectResolve = async hostname => {
             }
             return {records, expires: Date.now() + Math.max(ttl, 180000)};
         } catch {
-            return {records: [], expires: 0};
+            return emptyDnsRes;
         }
     };
+    const l = hostname ? hostname.length : 0;
+    const onlyV6 = canCheckGv && l >= 15 &&
+        (hostname.charCodeAt(l - 1) | 32) === 109 && (hostname.charCodeAt(l - 2) | 32) === 111 && (hostname.charCodeAt(l - 3) | 32) === 99 && hostname.charCodeAt(l - 4) === 46 &&
+        (hostname.charCodeAt(l - 5) | 32) === 111 && (hostname.charCodeAt(l - 6) | 32) === 101 && (hostname.charCodeAt(l - 7) | 32) === 100 && (hostname.charCodeAt(l - 8) | 32) === 105 &&
+        (hostname.charCodeAt(l - 9) | 32) === 118 && (hostname.charCodeAt(l - 10) | 32) === 101 && (hostname.charCodeAt(l - 11) | 32) === 108 && (hostname.charCodeAt(l - 12) | 32) === 103 &&
+        (hostname.charCodeAt(l - 13) | 32) === 111 && (hostname.charCodeAt(l - 14) | 32) === 111 && (hostname.charCodeAt(l - 15) | 32) === 103 && (l === 15 || hostname.charCodeAt(l - 16) === 46);
     const [ipv6, ipv4] = await Promise.all([
-        dnsStrategyOrder.includes('ipv6') ? resolve(true) : {records: [], expires: 0},
-        dnsStrategyOrder.includes('ipv4') ? resolve(false) : {records: [], expires: 0}
+        hasV6 ? resolve(true) : emptyDnsRes,
+        (hasV4 && !onlyV6) ? resolve(false) : emptyDnsRes
     ]);
     const hasRecord = ipv6.records.length || ipv4.records.length;
     const result = {ipv6: ipv6.records, ipv4: ipv4.records, expires: hasRecord ? Math.max(ipv6.expires, ipv4.expires) : Date.now() + 5000, refreshing: null};

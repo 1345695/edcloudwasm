@@ -7,7 +7,7 @@ const Me = 4;
 const ie = ["socks", "http", "https", "turn", "turns"];
 const ue = "https://cloudflare-dns.com/dns-query";
 const Y = "proxy.zjcloud.us.ci";
-const We = Uint8Array.from(ke.replace(/-/g, "").match(/../g), r => parseInt(r, 16));
+const We = Uint8Array.from(ke.replaceAll('-', '').match(/../g), r => parseInt(r, 16));
 const F = new TextEncoder, Z = new TextDecoder;
 const Re = `<html><head><title>404 Not Found</title></head><body><center><h1>404 Not Found</h1></center><hr><center>nginx/1.25.3</center></body></html>`;
 const ee = (r, n) => {
