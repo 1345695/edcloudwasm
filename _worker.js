@@ -33,7 +33,7 @@ const ssAeadEncryptCount = 16;
 /**- **警告**: worker最大支持6，超过6没意义*/
 let concurrency = 4;//socket获取并发数
 const enableSniSniff = true;//域名嗅探开关(支持ss vless trojan)
-const dnsStrategyOrder = ['ipv4', 'ipv6', 'hostname'];//socket获取地址类型连接优先级（可以只指定其中一个）
+const dnsStrategyOrder = ['ipv4', 'ipv6', 'hostname'];//socket获取地址类型连接优先级（可以只指定其中一个，hostname优先完全绕过dns给connect底层解析）
 // ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
 // ---------------------------------------------------------------------------------
@@ -410,25 +410,30 @@ const getTxtDnsCache = txtdns => {
     });
     return cached.answer ? cached : cached.refreshing;
 };
+const closeSocket = s => {try {s?.close?.()} catch {}};
+const fastShuffle = records => {
+    const len = records.length;
+    if (len <= 1) return len === 1 ? [records[0]] : [];
+    const result = records.slice();
+    for (let i = len - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0, temp = result[i];
+        result[i] = result[j], result[j] = temp;
+    }
+    return result;
+};
 const shuffleCandidates = (ipv6 = [], ipv4 = [], hostname) => {
-    const shuffle = records => {
-        records = records.slice();
-        for (let i = records.length - 1; i > 0; i--) {
-            const j = (Math.random() * (i + 1)) | 0;
-            [records[i], records[j]] = [records[j], records[i]];
-        }
-        return records;
-    };
-    return dnsStrategyOrder.map(strategy => {
-        const candidates = strategy === 'ipv6' ? ipv6 : strategy === 'ipv4' ? ipv4 : (strategy === 'hostname' && hostname) ? [hostname] : [];
-        return candidates.length ? shuffle(candidates) : null;
-    }).filter(Boolean);
+    const res = [];
+    for (let i = 0, l = dnsStrategyOrder.length; i < l; i++) {
+        const s = dnsStrategyOrder[i];
+        const c = s === 'ipv6' ? (ipv6.length ? ipv6 : null) : s === 'ipv4' ? (ipv4.length ? ipv4 : null) : (s === 'hostname' && hostname ? [hostname] : null);
+        if (c) res.push(fastShuffle(c));
+    }
+    return res;
 };
 const raceAny = (promises, closeFn) => {
     let settled = false, winner = null;
-    const resolvedList = [];
-    const wrapped = promises.map(async p => {
-        const res = await p;
+    const resolvedList = [], len = promises.length, wrapped = new Array(len);
+    for (let i = 0; i < len; i++) wrapped[i] = promises[i].then(res => {
         if (!res) throw new Error();
         if (settled) {
             closeFn?.(res);
@@ -439,40 +444,38 @@ const raceAny = (promises, closeFn) => {
     });
     return Promise.any(wrapped).then(win => {
         settled = true, winner = win;
-        for (const item of resolvedList) if (item !== winner) closeFn?.(item);
+        for (let i = 0, l = resolvedList.length; i < l; i++) if (resolvedList[i] !== winner) closeFn?.(resolvedList[i]);
         return winner;
     }, err => {
         settled = true;
-        for (const item of resolvedList) closeFn?.(item);
+        for (let i = 0, l = resolvedList.length; i < l; i++) closeFn?.(resolvedList[i]);
         throw err;
     });
 };
 const connectCandidates = (candidates, port, limit, socketOptions) => {
-    if (!candidates?.length) return Promise.reject();
-    if (candidates.length === 1 && limit === 1) return createConnect(candidates[0], port, socketOptions);
-    const targets = (candidates.length === 1 && limit > 1)
-        ? Array(limit).fill(candidates[0])
-        : (limit && candidates.length > limit ? candidates.slice(0, limit) : candidates);
-    const closeSocket = s => {try {s?.close?.()} catch {}};
-    const attempts = targets.map(candidate => {
-        const socket = connect({hostname: candidate, port}, socketOptions);
-        return socket.opened.then(() => socket, err => {
+    const len = candidates ? candidates.length : 0;
+    if (!len) return Promise.reject();
+    if (len === 1 && limit === 1) return createConnect(candidates[0], port, socketOptions);
+    const isSingle = len === 1, count = (isSingle && limit > 1) ? limit : (limit && len > limit ? limit : len);
+    const attempts = new Array(count);
+    for (let i = 0; i < count; i++) {
+        const target = isSingle ? candidates[0] : candidates[i];
+        const socket = connect({hostname: target, port}, socketOptions);
+        attempts[i] = socket.opened.then(() => socket, err => {
             closeSocket(socket);
             throw err;
         });
-    });
+    }
     return raceAny(attempts, closeSocket);
 };
 const connectGroups = async (groups, port, limit, socketOptions) => {
     let lastError;
-    for (const candidates of groups) try {return await connectCandidates(candidates, port, limit, socketOptions)} catch (err) {lastError = err}
+    for (let i = 0, len = groups.length; i < len; i++) try {return await connectCandidates(groups[i], port, limit, socketOptions)} catch (err) {lastError = err}
     throw lastError || new Error('No connect candidates');
 };
+const hostnameFrist = dnsStrategyOrder[0] === 'hostname';
 const concurrentConnect = async (hostname, port, limit = concurrency, socketOptions, addrType) => {
-    if (addrType !== 3) return connectCandidates([hostname], port, limit, socketOptions);
-    if (dnsStrategyOrder.length === 1 && dnsStrategyOrder[0] === 'hostname') {
-        return connectCandidates([hostname], port, limit, socketOptions);
-    }
+    if (addrType !== 3 || hostnameFrist) return connectCandidates([hostname], port, limit, socketOptions);
     const cached = await getDnsConnectCache(hostname);
     const groups = shuffleCandidates(cached.ipv6, cached.ipv4, hostname);
     try {
