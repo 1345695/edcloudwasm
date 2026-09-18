@@ -20,6 +20,20 @@ S5HTTPPASS = "123456"
 [limits]
 cpu_ms = 300000
 
+#放置
+# 更多位置去查询云主机区域位置.csv
+
+# [placement]
+# region = "aws:eu-west-2" #伦敦
+# region = "aws:eu-central-1" #法兰克福
+# region = "aws:eu-west-3" #巴黎
+# region = "azure:japanwest" #东京
+# region = "azure:malaysiawest" #马来西亚
+# region = "gcp:asia-east1" #新加坡
+# region = "aws:ap-east-2" #台北
+# region = "azure:westus2" #西雅图
+# region = "aws:us-west-1" #圣何塞
+
 [observability]
 enabled = false
 head_sampling_rate = 1
