@@ -80,24 +80,6 @@ pub unsafe extern "C" fn getSocks5AuthPtr() -> *const u8 {
     core::ptr::addr_of!(SOCKS5_AUTH) as *const u8
 }
 
-/// 设置 HTTP 认证长度
-#[no_mangle]
-pub unsafe extern "C" fn setHttpAuthLenWasm(len: i32) {
-    *RESULT.get_unchecked_mut(2) = len;
-}
-
-/// 设置 SOCKS5 认证长度
-#[no_mangle]
-pub unsafe extern "C" fn setSocks5AuthLenWasm(len: i32) {
-    *RESULT.get_unchecked_mut(3) = len;
-}
-
-/// 设置 SNI 嗅探开关 (1: 启用, 0: 禁用)
-#[no_mangle]
-pub unsafe extern "C" fn setSniSniffWasm(enable: i32) {
-    *RESULT.get_unchecked_mut(13) = enable;
-}
-
 // ==========================================
 // 节点生成与字符串常量 (明文极速版)
 // ==========================================
