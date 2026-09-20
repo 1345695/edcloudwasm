@@ -6,46 +6,35 @@ const maxChunkLen = 64 * 1024;
 const flushTime = 3;
 const concurrency = 4;
 const finallyProxyHost = 'proxy.zjcloud.us.ci';
-let currentColo = null;
-const getCurrentColo = async () => {
+const traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace', proxySuffix = '.proxy.zjcloud.us.ci';
+let currentColo = null, pendingPromise = null;
+const getCurrentColo = () => {
     if (currentColo !== null) return currentColo;
-    try {
-        const text = await fetch('https://cp.cloudflare.com/cdn-cgi/trace', {
-            headers: {'User-Agent': 'Mozilla/5.0'}
-        }).then(r => r.text());
-        const i = text.indexOf('colo=');
-        const colo = i >= 0 ? text.slice(i + 5, i + 8) : '';
-        currentColo = colo ? `${colo.toLowerCase()}.proxy.zjcloud.us.ci` : finallyProxyHost;
-        return currentColo;
-    } catch {
-        currentColo = finallyProxyHost;
-        return currentColo;
-    }
+    if (pendingPromise !== null) return pendingPromise;
+    return pendingPromise = fetch(traceUrl, {signal: AbortSignal.timeout(200)}).then(r => r.text()).then(t => {
+        const i = t.indexOf("colo=");
+        return currentColo = i !== -1 ? t.slice(i + 5, i + 8) + proxySuffix : finallyProxyHost
+    }).catch(() => currentColo = finallyProxyHost).finally(() => {pendingPromise = null})
 };
 const _h = c => (c > 64 ? (c & 7) + 9 : c & 15);
 const _b = p => (_h(uuid.charCodeAt(p)) << 4) | _h(uuid.charCodeAt(p + 1));
 const U0 = _b(0), U1 = _b(2), U2 = _b(4), U3 = _b(6), U4 = _b(9), U5 = _b(11), U6 = _b(14), U7 = _b(16), U8 = _b(19), U9 = _b(21), U10 = _b(24), U11 = _b(26), U12 = _b(28), U13 = _b(30), U14 = _b(32), U15 = _b(34);
 const textDecoder = new TextDecoder;
-const createConnect = (hostname, port, socket = connect({hostname, port})) => socket.opened.then(() => socket);
 const concurrentConnect = (hostname, port) => {
-    let settled = false, winner = null;
-    const sockets = new Array(concurrency);
-    const closeSocket = socket => {try {socket?.close()} catch {}};
-    const attempts = Array.from({length: concurrency}, (_, i) => {
+    let settled = false;
+    const sockets = new Array(concurrency), attempts = new Array(concurrency);
+    for (let i = 0; i < concurrency; i++) {
         const socket = connect({hostname, port});
         sockets[i] = socket;
-        return createConnect(hostname, port, socket).then(openedSocket => {
-            if (settled && openedSocket !== winner) closeSocket(openedSocket);
-            return openedSocket;
-        });
-    });
+        attempts[i] = socket.opened.then(() => (settled && closeSocket(socket), socket));
+    }
     return Promise.any(attempts).then(socket => {
-        settled = true, winner = socket;
-        for (const other of sockets) if (other !== socket) closeSocket(other);
+        settled = true;
+        for (let i = 0; i < concurrency; i++) if (sockets[i] !== socket) closeSocket(sockets[i]);
         return socket;
     }, err => {
         settled = true;
-        for (const socket of sockets) closeSocket(socket);
+        for (let i = 0; i < concurrency; i++) closeSocket(sockets[i]);
         throw err;
     });
 };
