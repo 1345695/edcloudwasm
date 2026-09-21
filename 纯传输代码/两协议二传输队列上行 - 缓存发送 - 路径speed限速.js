@@ -84,20 +84,18 @@ const concurrentDnsResolve = async (hostname, recordType) => {
 };
 const raceAny = promises => {
     let settled = false;
-    const len = promises.length, resolvedList = [], wrapped = new Array(len);
-    for (let i = 0; i < len; i++) wrapped[i] = promises[i].then(res => {
-        if (!res || settled) {
-            res?.close();
-            throw null;
-        }
-        resolvedList.push(res);
-        return res;
-    });
-    return Promise.any(wrapped).then(win => {
-        settled = true;
-        for (let i = 1, l = resolvedList.length; i < l; i++) resolvedList[i]?.close();
-        return win;
-    });
+    const len = promises.length, wrapped = new Array(len);
+    for (let i = 0; i < len; i++) {
+        wrapped[i] = promises[i].then(res => {
+            if (!res || settled) {
+                res?.close();
+                throw null;
+            }
+            settled = true;
+            return res;
+        });
+    }
+    return Promise.any(wrapped);
 };
 const concurrentConnect = (hostname, port, limit = concurrency, socketOptions) => {
     if (limit <= 1) return createConnect(hostname, port, socketOptions);

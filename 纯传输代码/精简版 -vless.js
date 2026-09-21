@@ -22,21 +22,19 @@ const U0 = _b(0), U1 = _b(2), U2 = _b(4), U3 = _b(6), U4 = _b(9), U5 = _b(11), U
 const textDecoder = new TextDecoder;
 const concurrentConnect = (hostname, port) => {
     let settled = false;
-    const sockets = new Array(concurrency), attempts = new Array(concurrency);
+    const attempts = new Array(concurrency);
     for (let i = 0; i < concurrency; i++) {
         const socket = connect({hostname, port});
-        sockets[i] = socket;
-        attempts[i] = socket.opened.then(() => (settled && closeSocket(socket), socket));
+        attempts[i] = socket.opened.then(() => {
+            if (settled) {
+                socket.close();
+                throw null;
+            }
+            settled = true;
+            return socket;
+        });
     }
-    return Promise.any(attempts).then(socket => {
-        settled = true;
-        for (let i = 0; i < concurrency; i++) if (sockets[i] !== socket) closeSocket(sockets[i]);
-        return socket;
-    }, err => {
-        settled = true;
-        for (let i = 0; i < concurrency; i++) closeSocket(sockets[i]);
-        throw err;
-    });
+    return Promise.any(attempts);
 };
 const manualPipe = async (readable, writable, close, speed) => {
     const n = parseFloat(speed), speedLimit = n > 0;
