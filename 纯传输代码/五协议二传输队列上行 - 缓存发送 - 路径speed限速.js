@@ -1828,34 +1828,15 @@ const connectProxyIp = async (param, limit, txt) => {
     return concurrentConnect(host, port, limit);
 };
 const strategyExecutorMap = new Map([
-    [0, ({addrType, port, addrBytes}, _param, limit) => {
-        return concurrentConnect(binaryAddrToString(addrType, addrBytes), port, limit);
-    }],
-    [1, async ({addrType, port, addrBytes}, param, limit, _txt) => {
-        return connectViaSocksProxy(addrType, port, param, addrBytes, limit);
-    }],
-    [2, async ({addrType, port, addrBytes}, param, limit, _txt) => {
-        return connectViaHttpProxy(addrType, port, param, addrBytes, limit);
-    }],
-    [6, async ({addrType, port, addrBytes}, param, limit, _txt) => {
-        return connectViaHttpProxy(addrType, port, param, addrBytes, limit, true);
-    }],
-    [3, async (_parsedRequest, param, limit, txt) => {
-        return connectProxyIp(param, limit, txt);
-    }],
-    [4, async ({addrType, port, addrBytes, isHttp}, param, limit, _txt) => {
-        const {nat64Auth, proxyAll} = param;
-        return connectNat64(addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp);
-    }],
-    [5, async (parsedRequest, param, _limit, _txt) => {
-        return connectViaTurnProxy(param, parsedRequest);
-    }],
-    [7, async (parsedRequest, param, _limit, _txt) => {
-        return connectViaTurnProxy(param, parsedRequest, true);
-    }],
-    [8, async (parsedRequest, param, _limit, _txt) => {
-        return connectViaSstpProxy(param, parsedRequest);
-    }]
+    [0, ({addrType, port, addrBytes}, _param, limit) => concurrentConnect(binaryAddrToString(addrType, addrBytes), port, limit)],
+    [1, async ({addrType, port, addrBytes}, param, limit, _txt) => connectViaSocksProxy(addrType, port, param, addrBytes, limit)],
+    [2, async ({addrType, port, addrBytes}, param, limit, _txt) => connectViaHttpProxy(addrType, port, param, addrBytes, limit)],
+    [6, async ({addrType, port, addrBytes}, param, limit, _txt) => connectViaHttpProxy(addrType, port, param, addrBytes, limit, true)],
+    [3, async (_parsedRequest, param, limit, txt) => connectProxyIp(param, limit, txt)],
+    [4, async ({addrType, port, addrBytes, isHttp}, param, limit, _txt) => connectNat64(addrType, port, param.nat64Auth, addrBytes, param.proxyAll, limit, isHttp)],
+    [5, async (parsedRequest, param, _limit, _txt) => connectViaTurnProxy(param, parsedRequest)],
+    [7, async (parsedRequest, param, _limit, _txt) => connectViaTurnProxy(param, parsedRequest, true)],
+    [8, async (parsedRequest, param, _limit, _txt) => connectViaSstpProxy(param, parsedRequest)]
 ]);
 const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
     const attempts = params.map(param => Promise.resolve().then(() => exec(parsedRequest, param, limit, txt)));

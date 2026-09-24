@@ -276,21 +276,11 @@ const connectProxyIp = async (param, limit, txt) => {
     return concurrentConnect(host, port, limit);
 };
 const strategyExecutorMap = new Map([
-    [0, ({addrType, port, addrBytes}, _param, limit) => {
-        return concurrentConnect(binaryAddrToString(addrType, addrBytes), port, limit);
-    }],
-    [1, async ({addrType, port, addrBytes}, param, limit, _txt) => {
-        return connectViaSocksProxy(addrType, port, param, addrBytes, limit);
-    }],
-    [2, async ({addrType, port, addrBytes}, param, limit, _txt) => {
-        return connectViaHttpProxy(addrType, port, param, addrBytes, limit);
-    }],
-    [6, async ({addrType, port, addrBytes}, param, limit, _txt) => {
-        return connectViaHttpProxy(addrType, port, param, addrBytes, limit, true);
-    }],
-    [3, async (_parsedRequest, param, limit, txt) => {
-        return connectProxyIp(param, limit, txt);
-    }]
+    [0, ({addrType, port, addrBytes}, _param, limit) => concurrentConnect(binaryAddrToString(addrType, addrBytes), port, limit)],
+    [1, async ({addrType, port, addrBytes}, param, limit, _txt) => connectViaSocksProxy(addrType, port, param, addrBytes, limit)],
+    [2, async ({addrType, port, addrBytes}, param, limit, _txt) => connectViaHttpProxy(addrType, port, param, addrBytes, limit)],
+    [6, async ({addrType, port, addrBytes}, param, limit, _txt) => connectViaHttpProxy(addrType, port, param, addrBytes, limit, true)],
+    [3, async (_parsedRequest, param, limit, txt) => connectProxyIp(param, limit, txt)]
 ]);
 const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
     const attempts = params.map(param => Promise.resolve().then(() => exec(parsedRequest, param, limit, txt)));
