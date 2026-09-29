@@ -540,7 +540,7 @@ const ut = (e, n) => {
         if (o) return;
         const a = u.constructor === Uint8Array ? u : new Uint8Array(u), h = a.byteLength;
         if (!h) return;
-        r + h > 32768 && c(), t.set(a, r), r += h, r === 32768 ? c() : (s && clearTimeout(s), s = setTimeout(c, 2))
+        r + h > 32768 && c(), t.set(a, r), r += h, r === 32768 ? c() : (s ||= setTimeout(c, 2))
     }
 };
 const ft = (e, n) => {
@@ -646,7 +646,7 @@ const dt = async e => {
                         e.body.pipeThrough(s).pipeTo(t.tcpSocket.writable);
                         break
                     }
-                    a > 24576 ? w() : (y && clearTimeout(y), y = setTimeout(w, 2))
+                    a > 24576 ? w() : (y ||= setTimeout(w, 2))
                 } else {
                     t.needMore = false;
                     await xe(c.subarray(0, a), t, e, i, l);
