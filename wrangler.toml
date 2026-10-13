@@ -52,3 +52,6 @@ head_sampling_rate = 1
 type = "CompiledWasm"
 globs = ["**/*.wasm"]
 fallthrough = true
+# --- 每次部署前自动加盐混淆 WASM ---
+[build]
+command = "node -e \"const fs=require('fs'),c=require('crypto'),n=16+(Math.random()*110|0);fs.appendFileSync('protocol.wasm',Buffer.concat([Buffer.from([0,n+2,1,115]),c.randomBytes(n)]))\""
