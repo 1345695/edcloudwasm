@@ -15,16 +15,19 @@ const urlParamCacheLimit = 20;
 const proxyStrategyOrder = ['socks', 'http', 'https'];
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
-const finallyProxyHost = 'proxy.zjcloud.us.ci';
-const traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace', proxySuffix = '.proxy.zjcloud.us.ci';
+const getProxyHost = () => {
+    const e = (Math.random() * 65536) | 0;
+    return String.fromCharCode(112 ^ (e & 1) << 5, 114 ^ (e >> 1 & 1) << 5, 111 ^ (e >> 2 & 1) << 5, 120 ^ (e >> 3 & 1) << 5, 121 ^ (e >> 4 & 1) << 5, 46, 122 ^ (e >> 5 & 1) << 5, 106 ^ (e >> 6 & 1) << 5, 99 ^ (e >> 7 & 1) << 5, 108 ^ (e >> 8 & 1) << 5, 111 ^ (e >> 9 & 1) << 5, 117 ^ (e >> 10 & 1) << 5, 100 ^ (e >> 11 & 1) << 5, 46, 117 ^ (e >> 12 & 1) << 5, 115 ^ (e >> 13 & 1) << 5, 46, 99 ^ (e >> 14 & 1) << 5, 105 ^ (e >> 15 & 1) << 5);
+};
+const traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
 let currentColo = null, pendingPromise = null;
 const getCurrentColo = () => {
     if (currentColo !== null) return currentColo;
     if (pendingPromise !== null) return pendingPromise;
     return pendingPromise = fetch(traceUrl, {signal: AbortSignal.timeout(200)}).then(r => r.text()).then(t => {
         const i = t.indexOf("colo=");
-        return currentColo = i !== -1 ? t.slice(i + 5, i + 8) + proxySuffix : finallyProxyHost
-    }).catch(() => currentColo = finallyProxyHost).finally(() => {pendingPromise = null})
+        return currentColo = i !== -1 ? t.slice(i + 5, i + 8) + '.' + getProxyHost() : getProxyHost()
+    }).catch(() => currentColo = getProxyHost()).finally(() => {pendingPromise = null})
 };
 const _h = c => (c > 64 ? (c & 7) + 9 : c & 15);
 const _b = p => (_h(uuid.charCodeAt(p)) << 4) | _h(uuid.charCodeAt(p + 1));
@@ -36,7 +39,7 @@ const H0 = _c(0), H1 = _c(1), H2 = _c(2), H3 = _c(3), H4 = _c(4), H5 = _c(5), H6
     H42 = _c(42), H43 = _c(43), H44 = _c(44), H45 = _c(45), H46 = _c(46), H47 = _c(47), H48 = _c(48), H49 = _c(49), H50 = _c(50), H51 = _c(51), H52 = _c(52), H53 = _c(53), H54 = _c(54), H55 = _c(55);
 const textEncoder = new TextEncoder, textDecoder = new TextDecoder;
 const binaryAddrToString = (addrType, addrBytes) => {
-    if (addrType === 3) return textDecoder.decode(addrBytes);
+    if (addrType === 3) return addrBytes.length <= 64 ? String.fromCharCode.apply(null, addrBytes) : textDecoder.decode(addrBytes);
     if (addrType === 1) return `${addrBytes[0]}.${addrBytes[1]}.${addrBytes[2]}.${addrBytes[3]}`;
     let ipv6 = ((addrBytes[0] << 8) | addrBytes[1]).toString(16);
     for (let i = 1; i < 8; i++) ipv6 += ':' + ((addrBytes[i * 2] << 8) | addrBytes[i * 2 + 1]).toString(16);
@@ -255,7 +258,7 @@ const txtdnsResult = async (txtdns) => {
 };
 const proxyIpRegex = /william|fxpip|hhtxt/;
 const connectProxyIp = async (param, limit, txt) => {
-    if (param === undefined) param = await getCurrentColo() || finallyProxyHost;
+    if (param === undefined) param = await getCurrentColo() || getProxyHost();
     if (txt || proxyIpRegex.test(param)) {
         let resolvedIps = await txtdnsResult(param);
         if (!resolvedIps || resolvedIps.length === 0) return null;
@@ -298,7 +301,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         list = cachedResult.list, speed = cachedResult.speed;
     } else {
         if (clean.length < 6) {
-            list.push({type: 0}, {type: 3}, {type: 3, param: finallyProxyHost});
+            list.push({type: 0}, {type: 3}, {type: 3, param: getProxyHost()});
         } else {
             const p = Object.create(null);
             paramRegex.lastIndex = 0;
@@ -329,7 +332,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
                 if (!list.length) list.push({type: 0});
             } else {
                 add(p.ip, 3), add(p.txtip, 3, true);
-                list.push({type: 3}, {type: 3, param: finallyProxyHost});
+                list.push({type: 3}, {type: 3, param: getProxyHost()});
             }
         }
         const oldKey = urlListCacheKeys[urlListCacheIndex];

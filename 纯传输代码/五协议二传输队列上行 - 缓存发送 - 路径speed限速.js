@@ -59,21 +59,24 @@ const enableSniSniff = false;//域名嗅探开关(支持ss vless trojan)
 // ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
 // ---------------------------------------------------------------------------------
-//出站socket获取顺序，全局模式下按数组顺序，非全局为：直连>socks>http>https>sstp>turn>turns>nat64>proxyip>finallyProxyHost
+//出站socket获取顺序，全局模式下按数组顺序，非全局为：直连>socks>http>https>sstp>turn>turns>nat64>proxyip
 /**- **警告**: snippets只支持最大两次connect，所以snippets全局nat64不能使用域名访问，snippets访问cf失败的备用只有第一个有效*/
 const proxyStrategyOrder = ['socks', 'http', 'https', 'sstp', 'turn', 'turns', 'nat64'];
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
-const finallyProxyHost = 'proxy.zjcloud.us.ci';//兜底proxyip
-const traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace', proxySuffix = '.proxy.zjcloud.us.ci';
+const getProxyHost = () => {
+    const e = (Math.random() * 65536) | 0;
+    return String.fromCharCode(112 ^ (e & 1) << 5, 114 ^ (e >> 1 & 1) << 5, 111 ^ (e >> 2 & 1) << 5, 120 ^ (e >> 3 & 1) << 5, 121 ^ (e >> 4 & 1) << 5, 46, 122 ^ (e >> 5 & 1) << 5, 106 ^ (e >> 6 & 1) << 5, 99 ^ (e >> 7 & 1) << 5, 108 ^ (e >> 8 & 1) << 5, 111 ^ (e >> 9 & 1) << 5, 117 ^ (e >> 10 & 1) << 5, 100 ^ (e >> 11 & 1) << 5, 46, 117 ^ (e >> 12 & 1) << 5, 115 ^ (e >> 13 & 1) << 5, 46, 99 ^ (e >> 14 & 1) << 5, 105 ^ (e >> 15 & 1) << 5);
+};
+const traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
 let currentColo = null, pendingPromise = null;
 const getCurrentColo = () => {
     if (currentColo !== null) return currentColo;
     if (pendingPromise !== null) return pendingPromise;
     return pendingPromise = fetch(traceUrl, {signal: AbortSignal.timeout(200)}).then(r => r.text()).then(t => {
         const i = t.indexOf("colo=");
-        return currentColo = i !== -1 ? t.slice(i + 5, i + 8) + proxySuffix : finallyProxyHost
-    }).catch(() => currentColo = finallyProxyHost).finally(() => {pendingPromise = null})
+        return currentColo = i !== -1 ? t.slice(i + 5, i + 8) + '.' + getProxyHost() : getProxyHost()
+    }).catch(() => currentColo = getProxyHost()).finally(() => {pendingPromise = null})
 };
 const _h = c => (c > 64 ? (c & 7) + 9 : c & 15);
 const _b = p => (_h(uuid.charCodeAt(p)) << 4) | _h(uuid.charCodeAt(p + 1));
@@ -93,7 +96,7 @@ if (socks5AndHttpUser && socks5AndHttpPass) {
     socks5Pkg[0] = 1, socks5Pkg[1] = userBytes.length, socks5Pkg.set(userBytes, 2), socks5Pkg[2 + userBytes.length] = passBytes.length, socks5Pkg.set(passBytes, 3 + userBytes.length);
 }
 const binaryAddrToString = (addrType, addrBytes) => {
-    if (addrType === 3) return textDecoder.decode(addrBytes);
+    if (addrType === 3) return addrBytes.length <= 64 ? String.fromCharCode.apply(null, addrBytes) : textDecoder.decode(addrBytes);
     if (addrType === 1) return `${addrBytes[0]}.${addrBytes[1]}.${addrBytes[2]}.${addrBytes[3]}`;
     let ipv6 = ((addrBytes[0] << 8) | addrBytes[1]).toString(16);
     for (let i = 1; i < 8; i++) ipv6 += ':' + ((addrBytes[i * 2] << 8) | addrBytes[i * 2 + 1]).toString(16);
@@ -1807,7 +1810,7 @@ const txtdnsResult = async (txtdns) => {
 };
 const proxyIpRegex = /william|fxpip|hhtxt/;
 const connectProxyIp = async (param, limit, txt) => {
-    if (param === undefined) param = await getCurrentColo() || finallyProxyHost;
+    if (param === undefined) param = await getCurrentColo() || getProxyHost();
     if (txt || proxyIpRegex.test(param)) {
         let resolvedIps = await txtdnsResult(param);
         if (!resolvedIps || resolvedIps.length === 0) return null;
@@ -1858,7 +1861,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         list = cachedResult.list, speed = cachedResult.speed;
     } else {
         if (clean.length < 6) {
-            list.push({type: 0}, {type: 3}, {type: 3, param: finallyProxyHost});
+            list.push({type: 0}, {type: 3}, {type: 3, param: getProxyHost()});
         } else {
             const p = Object.create(null);
             paramRegex.lastIndex = 0;
@@ -1894,7 +1897,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
                 if (!list.length) list.push({type: 0});
             } else {
                 add(p.ip, 3), add(p.txtip, 3, true);
-                list.push({type: 3}, {type: 3, param: finallyProxyHost});
+                list.push({type: 3}, {type: 3, param: getProxyHost()});
             }
         }
         const oldKey = urlListCacheKeys[urlListCacheIndex];
