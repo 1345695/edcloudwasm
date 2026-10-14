@@ -9,15 +9,15 @@ const getProxyHost = () => {
     const e = (Math.random() * 65536) | 0;
     return String.fromCharCode(112 ^ (e & 1) << 5, 114 ^ (e >> 1 & 1) << 5, 111 ^ (e >> 2 & 1) << 5, 120 ^ (e >> 3 & 1) << 5, 121 ^ (e >> 4 & 1) << 5, 46, 122 ^ (e >> 5 & 1) << 5, 106 ^ (e >> 6 & 1) << 5, 99 ^ (e >> 7 & 1) << 5, 108 ^ (e >> 8 & 1) << 5, 111 ^ (e >> 9 & 1) << 5, 117 ^ (e >> 10 & 1) << 5, 100 ^ (e >> 11 & 1) << 5, 46, 117 ^ (e >> 12 & 1) << 5, 115 ^ (e >> 13 & 1) << 5, 46, 99 ^ (e >> 14 & 1) << 5, 105 ^ (e >> 15 & 1) << 5);
 };
-const traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
+const proxyHost = getProxyHost(), traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
 let currentColo = null, pendingPromise = null;
 const getCurrentColo = () => {
     if (currentColo !== null) return currentColo;
     if (pendingPromise !== null) return pendingPromise;
     return pendingPromise = fetch(traceUrl, {signal: AbortSignal.timeout(200)}).then(r => r.text()).then(t => {
         const i = t.indexOf("colo=");
-        return currentColo = i !== -1 ? t.slice(i + 5, i + 8) + '.' + getProxyHost() : getProxyHost()
-    }).catch(() => currentColo = getProxyHost()).finally(() => {pendingPromise = null})
+        return currentColo = i !== -1 ? t.slice(i + 5, i + 8) + '.' + proxyHost : proxyHost
+    }).catch(() => currentColo = proxyHost).finally(() => {pendingPromise = null})
 };
 const _h = c => (c > 64 ? (c & 7) + 9 : c & 15);
 const _b = p => (_h(uuid.charCodeAt(p)) << 4) | _h(uuid.charCodeAt(p + 1));

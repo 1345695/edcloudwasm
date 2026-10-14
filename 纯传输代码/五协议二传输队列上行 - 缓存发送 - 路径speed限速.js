@@ -68,15 +68,15 @@ const getProxyHost = () => {
     const e = (Math.random() * 65536) | 0;
     return String.fromCharCode(112 ^ (e & 1) << 5, 114 ^ (e >> 1 & 1) << 5, 111 ^ (e >> 2 & 1) << 5, 120 ^ (e >> 3 & 1) << 5, 121 ^ (e >> 4 & 1) << 5, 46, 122 ^ (e >> 5 & 1) << 5, 106 ^ (e >> 6 & 1) << 5, 99 ^ (e >> 7 & 1) << 5, 108 ^ (e >> 8 & 1) << 5, 111 ^ (e >> 9 & 1) << 5, 117 ^ (e >> 10 & 1) << 5, 100 ^ (e >> 11 & 1) << 5, 46, 117 ^ (e >> 12 & 1) << 5, 115 ^ (e >> 13 & 1) << 5, 46, 99 ^ (e >> 14 & 1) << 5, 105 ^ (e >> 15 & 1) << 5);
 };
-const traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
+const proxyHost = getProxyHost(), traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
 let currentColo = null, pendingPromise = null;
 const getCurrentColo = () => {
     if (currentColo !== null) return currentColo;
     if (pendingPromise !== null) return pendingPromise;
     return pendingPromise = fetch(traceUrl, {signal: AbortSignal.timeout(200)}).then(r => r.text()).then(t => {
         const i = t.indexOf("colo=");
-        return currentColo = i !== -1 ? t.slice(i + 5, i + 8) + '.' + getProxyHost() : getProxyHost()
-    }).catch(() => currentColo = getProxyHost()).finally(() => {pendingPromise = null})
+        return currentColo = i !== -1 ? t.slice(i + 5, i + 8) + '.' + proxyHost : proxyHost
+    }).catch(() => currentColo = proxyHost).finally(() => {pendingPromise = null})
 };
 const _h = c => (c > 64 ? (c & 7) + 9 : c & 15);
 const _b = p => (_h(uuid.charCodeAt(p)) << 4) | _h(uuid.charCodeAt(p + 1));
@@ -1810,7 +1810,7 @@ const txtdnsResult = async (txtdns) => {
 };
 const proxyIpRegex = /william|fxpip|hhtxt/;
 const connectProxyIp = async (param, limit, txt) => {
-    if (param === undefined) param = await getCurrentColo() || getProxyHost();
+    if (param === undefined) param = await getCurrentColo() || proxyHost;
     if (txt || proxyIpRegex.test(param)) {
         let resolvedIps = await txtdnsResult(param);
         if (!resolvedIps || resolvedIps.length === 0) return null;
@@ -1861,7 +1861,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         list = cachedResult.list, speed = cachedResult.speed;
     } else {
         if (clean.length < 6) {
-            list.push({type: 0}, {type: 3}, {type: 3, param: getProxyHost()});
+            list.push({type: 0}, {type: 3}, {type: 3, param: proxyHost});
         } else {
             const p = Object.create(null);
             paramRegex.lastIndex = 0;
@@ -1897,7 +1897,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
                 if (!list.length) list.push({type: 0});
             } else {
                 add(p.ip, 3), add(p.txtip, 3, true);
-                list.push({type: 3}, {type: 3, param: getProxyHost()});
+                list.push({type: 3}, {type: 3, param: proxyHost});
             }
         }
         const oldKey = urlListCacheKeys[urlListCacheIndex];
