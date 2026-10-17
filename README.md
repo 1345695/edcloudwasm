@@ -25,6 +25,9 @@
 
 ## 部署到 Cloudflare Workers ☁️
 
+> 💡 **在线自定义代码**：可访问 [自定义代码生成](https://jscode-1hp.pages.dev/) 自选功能并快速生成代码。  
+> 💬 **交流反馈**：使用中如有疑问或遇到 Bug，欢迎加入 Telegram 群组 [HeroCore](https://t.me/HeroCore) 并在群内 **@zj** 反馈。
+
 项目根目录下的 `wrangler.toml` 已提供基础配置，推荐的部署流程如下。
 
 ### 1. 准备工作
