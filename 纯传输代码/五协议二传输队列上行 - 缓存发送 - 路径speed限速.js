@@ -1974,16 +1974,14 @@ const createBufferedTcpWriter = (tcpWriter, close) => {
     let offset = 0, timerId = null, closed = false;
     const closeWriter = () => {
         if (closed) return;
-        closed = true;
-        timerId && (clearTimeout(timerId), timerId = null);
-        close?.();
+        closed = true, timerId && (clearTimeout(timerId), timerId = null), close?.();
     };
-    const safeWrite = data => {try {tcpWriter.write(data)} catch {closeWriter()}};
     const flush = () => {
         timerId && (clearTimeout(timerId), timerId = null);
         if (!offset || closed) return;
         const len = offset;
-        offset = 0, safeWrite(buffer.subarray(0, len));
+        offset = 0;
+        try {tcpWriter.write(buffer.subarray(0, len))} catch {closeWriter()}
     };
     return chunk => {
         if (closed) return;
