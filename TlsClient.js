@@ -66,7 +66,7 @@ export const {TlsClient} = (() => {
                 a.push(E(0, 0, f(l.length + 5), f(l.length + 3), 0, f(l.length), l))
             }
             const i = d(E(0, 29, f(e.x25519.length), e.x25519), E(0, 23, f(e.p256.length), e.p256));
-            a.push(E(f(11), 0, 2, 1, 0), E(f(10), 0, 6, 0, 4, 0, 29, 0, 23), E(f(13), 0, 34, 0, 32, ...[2052, 2053, 2054, 2055, 2056, 2057, 2058, 2059, 1027, 1283, 1539, 1025, 1281, 1537, 513, 515].flatMap(f)), E(f(43), 0, 5, 4, 3, 4, 3, 3), E(f(51), f(i.length + 2), f(i.length), i));
+            a.push(E(f(11), 0, 2, 1, 0), E(f(10), 0, 6, 0, 4, 0, 29, 0, 23), E(f(13), 0, 12, 0, 10, ...[1027, 2052, 1025, 1283, 2053].flatMap(f)), E(f(43), 0, 5, 4, 3, 4, 3, 3), E(f(51), f(i.length + 2), f(i.length), i));
             const c = d(...a);
             return L(1, E(f(771), s, r.length, r, f(n.length), n, 1, 0, f(c.length), c))
         }, T = async (s, t, e, r, n) => {

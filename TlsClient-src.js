@@ -724,16 +724,15 @@ function buildClientHello(clientRandom, serverName, keyShares, {sessionId = EMPT
         concatBytes(u16ToBytes(10), 0, 6, 0, 4, 0, 29, 0, 23), // supported_groups (10): len=6, list_len=4, groups: [29, 23]
         concatBytes(
             u16ToBytes(13), // signature_algorithms (13)
-            0, 34,          // ext_len = 34
-            0, 32,          // algorithms_len = 32 (16 种签名组合，每种 2 字节)
+            0, 12,          // ext_len = 12
+            0, 10,          // algorithms_len = 10 (5 种签名组合，每种 2 字节)
             ...[
-                2052, 2053, 2054, // rsa_pss_rsae_sha256/384/512
-                2055, 2056,       // ed25519, ed448
-                2057, 2058, 2059, // rsa_pss_pss_sha256/384/512
-                1027, 1283, 1539, // ecdsa_secp256r1/384r1/521r1_sha256/384/512
-                1025, 1281, 1537, // rsa_pkcs1_sha256/384/512
-                513, 515          // rsa_pkcs1_sha1, ecdsa_sha1 (向后兼容)
-            ].flatMap(u16ToBytes)
+                1027, //(ECDSA P-256)
+                2052, //(RSA-PSS SHA-256)
+                1025, //(RSA-PKCS1 SHA-256)
+                1283, //(ECDSA P-384)
+                2053  //(RSA-PSS SHA-384)
+                ].flatMap(u16ToBytes)
         ),
         concatBytes(u16ToBytes(43), 0, 5, 4, 3, 4, 3, 3), // supported_versions (43): len=5, list_len=4, versions: [0x0304 (TLS 1.3), 0x0303 (TLS 1.2)]
         concatBytes(u16ToBytes(51), u16ToBytes(keyShareEntries.length + 2), u16ToBytes(keyShareEntries.length), keyShareEntries) // key_share (51)
