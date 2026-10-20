@@ -3,30 +3,30 @@
 use core::panic::PanicInfo;
 
 // ==========================================
-// 内存布局与全局状态 (紧凑版)
+// 内存布局与全局状态（紧凑版）
 // ==========================================
 
-/// RESULT 槽位分配 (WASM 与 JS 共享的 36 个状态标志/返回值):
+/// RESULT 槽位分配（WASM 与 JS 共享的 37 个状态标志/返回值）：
 /// --- 全局配置区域 ---
-/// [0]: 是否启用 VLESS UUID 验证 (1为启用)
-/// [1]: 是否启用 Trojan 密码 Hash 验证 (1为启用)
-/// [2]: 启用的 HTTP 认证字符串长度
-/// [3]: 启用的 SOCKS5 认证包长度 (SOCKS5_AUTH 缓冲区中有效数据的长度)
-/// [4]: SOCKS5 下一步状态 (0: 无/初始, 1: 等待认证, 2: 等待请求)
-/// [13]: 是否启用 SNI 嗅探 (1为启用, 0为禁用)
-/// [14]: 是否还需要更多协议头数据 (0:不需要, 1:需要)
+/// [0]: 是否启用 VLESS UUID 验证（1：启用）
+/// [1]: 是否启用 Trojan 密码 Hash 验证（1：启用）
+/// [2]: HTTP 认证字符串长度
+/// [3]: SOCKS5 认证包长度（SOCKS5_AUTH 缓冲区中有效数据的长度）
+/// [4]: SOCKS5 下一步状态（0：无/初始，1：等待认证，2：等待请求）
+/// [13]: 是否启用 SNI 嗅探（1：启用，0：禁用）
+/// [14]: 是否还需要更多协议头数据（0：不需要，1：需要）
 ///
-/// --- 协议解析结果 (每次 parseProtocolWasm 后更新) ---
+/// --- 协议解析结果（每次 parseProtocolWasm 后更新）---
 /// [5]: 目标地址类型 (1: IPv4, 3: 域名, 4: IPv6)
 /// [6]: 目标端口号
-/// [7]: 真实数据偏移量 (协议头之后的 payload 起始位置)
-/// [8]: 是否为 DNS 请求 (目标端口为 53 则是)
+/// [7]: 实际数据偏移量（协议头之后的 payload 起始位置）
+/// [8]: 是否为 DNS 请求（目标端口为 53 时为 1）
 /// [9]: 目标地址在 COMMON_BUF 中的起始索引
-/// [10]: 目标地址的长度
+/// [10]: 目标地址长度
 /// [11]: 识别到的协议 ID (0: VLESS, 1: Trojan, 2: Shadowsocks, 3: HTTP, 4: SOCKS5)
-/// [12]: 需要发送给客户端的握手回包长度 (如 HTTP 200 OK 或 VLESS 的响应)
+/// [12]: 需要发送给客户端的握手回包长度（如 HTTP 200 OK 或 VLESS 响应）
 ///
-/// --- URL 解析结果 (parseUrlWasm 后更新) ---
+/// --- URL 解析结果（parseUrlWasm 后更新）---
 /// [15]: Socks5 参数偏移, [16]: Socks5 参数长度
 /// [17]: Http 参数偏移,   [18]: Http 参数长度
 /// [19]: Nat64 参数偏移,  [20]: Nat64 参数长度
@@ -38,13 +38,14 @@ use core::panic::PanicInfo;
 /// [30]: Speed 参数偏移,  [31]: Speed 参数长度
 /// [32]: Turns 参数偏移,  [33]: Turns 参数长度
 /// [34]: SSTP 参数偏移,   [35]: SSTP 参数长度
-static mut RESULT: [i32; 36] = {
-    let mut r = [0; 36];
+/// [36]: AI 域名标志（parseProtocolWasm 成功解析请求头时更新，1：匹配）
+static mut RESULT: [i32; 37] = {
+    let mut r = [0; 37];
     r[13] = 1; // 默认启用 SNI 嗅探
     r
 };
 
-static mut COMMON_BUF: [u8; 2048] = [0; 2048]; // 2KB 通用数据缓冲区
+static mut COMMON_BUF: [u8; 2048] = [0; 2048]; // 2 KB 通用数据缓冲区
 static mut UUID: [u8; 16] = [0; 16]; // VLESS UUID
 static mut HASH: [u8; 56] = [0; 56]; // Trojan Hash
 static mut HTTP_AUTH: [u8; 256] = [0; 256]; // HTTP Auth (Base64) - 256 字节
@@ -81,13 +82,13 @@ pub unsafe extern "C" fn getSocks5AuthPtr() -> *const u8 {
 }
 
 
-/// 生成随机大小写的 proxy 域名 (proxy.zjcloud.us.ci) 并写入 COMMON_BUF，返回其长度 (19)
-/// 纯数字码表与位运算处理，无任何明文字符串
+/// 生成随机大小写的 proxy 域名（proxy.zjcloud.us.ci），写入 COMMON_BUF 并返回长度（19）
+/// 使用纯数字码表和位运算处理，不包含明文字符串
 static mut RNG_STATE: u32 = 0x853c49e6;
 
 #[no_mangle]
 pub unsafe extern "C" fn getProxyHostWasm() {
-    // 3 行极速 Xorshift 伪随机算法推进状态
+    // 用 3 行 Xorshift 伪随机算法推进状态
     let mut rand = RNG_STATE;
     rand ^= rand << 13;
     rand ^= rand >> 17;
@@ -112,13 +113,128 @@ pub unsafe extern "C" fn getProxyHostWasm() {
 }
 
 // ==========================================
-// 辅助工具函数 (极致性能版)
+// 辅助工具函数（极致性能版）
 // ==========================================
 
 /// 极速 ASCII 转小写
 #[inline(always)]
 fn ascii_lower(b: u8) -> u8 {
     b.wrapping_add(((b.wrapping_sub(b'A') <= 25) as u8).wrapping_mul(32))
+}
+
+#[inline(always)]
+fn ascii_lower_u64(value: u64) -> u64 {
+    u64::from_le_bytes(value.to_le_bytes().map(ascii_lower))
+}
+
+#[inline(always)]
+fn ascii_lower_u32(value: u32) -> u32 {
+    u32::from_le_bytes(value.to_le_bytes().map(ascii_lower))
+}
+
+#[inline(always)]
+fn ascii_lower_u16(value: u16) -> u16 {
+    u16::from_le_bytes(value.to_le_bytes().map(ascii_lower))
+}
+
+/// 分层块比较：simd128 > 64 > 32 > 16 > 8。
+#[inline(always)]
+unsafe fn eq_ai_domain_bytes(a: *const u8, b: *const u8, len: usize) -> bool {
+    let mut off = 0usize;
+    use core::arch::wasm32::{
+        i8x16_eq, i8x16_ge, i8x16_le, u8x16_bitmask, u8x16_splat, v128, v128_and,
+        v128_load, v128_or,
+    };
+    let uppercase_delta = u8x16_splat(0x20);
+    while off + 16 <= len {
+        let input = v128_load(a.add(off) as *const v128);
+        let expected = v128_load(b.add(off) as *const v128);
+        let upper = v128_and(
+            i8x16_ge(input, u8x16_splat(b'A')),
+            i8x16_le(input, u8x16_splat(b'Z')),
+        );
+        let folded = v128_or(input, v128_and(upper, uppercase_delta));
+        if u8x16_bitmask(i8x16_eq(folded, expected)) != 0xFFFF {
+            return false;
+        }
+        off += 16;
+    }
+
+    while off + 8 <= len {
+        if ascii_lower_u64(core::ptr::read_unaligned(a.add(off) as *const u64))
+            != core::ptr::read_unaligned(b.add(off) as *const u64)
+        {
+            return false;
+        }
+        off += 8;
+    }
+
+    if off + 4 <= len {
+        if ascii_lower_u32(core::ptr::read_unaligned(a.add(off) as *const u32))
+            != core::ptr::read_unaligned(b.add(off) as *const u32)
+        {
+            return false;
+        }
+        off += 4;
+    }
+
+    if off + 2 <= len {
+        if ascii_lower_u16(core::ptr::read_unaligned(a.add(off) as *const u16))
+            != core::ptr::read_unaligned(b.add(off) as *const u16)
+        {
+            return false;
+        }
+        off += 2;
+    }
+
+    off == len || ascii_lower(*a.add(off)) == *b.add(off)
+}
+
+const AI_DOMAINS: [&[u8]; 18] = [
+    b"chatgpt.com", b"openai.com", b"oaistatic.com",
+    b"oaiusercontent.com", b"chat.com", b"claude.ai", b"claude.com",
+    b"anthropic.com", b"grok.com", b"x.ai", b"perplexity.ai", b"poe.com",
+    b"character.ai", b"pi.ai", b"you.com", b"phind.com", b"blackbox.ai",
+    b"civitai.com",
+];
+
+/// 使用分层块比较匹配 AI 域名后缀：仅匹配域名地址，忽略大小写并允许末尾点。
+#[inline(always)]
+unsafe fn is_ai_domain(addr_type: i32, addr_off: usize, addr_len: usize) -> bool {
+    if addr_type != 3 || addr_off > COMMON_BUF.len() || addr_len > COMMON_BUF.len() - addr_off {
+        return false;
+    }
+    let mut host_len = addr_len;
+    if host_len > 0 && *COMMON_BUF.get_unchecked(addr_off + host_len - 1) == b'.' {
+        host_len -= 1;
+    }
+    for domain in AI_DOMAINS.iter() {
+        let domain_len = domain.len();
+        if host_len < domain_len {
+            continue;
+        }
+        if host_len > domain_len
+            && *COMMON_BUF.get_unchecked(addr_off + host_len - domain_len - 1) != b'.'
+        {
+            continue;
+        }
+        let start = addr_off + host_len - domain_len;
+        if eq_ai_domain_bytes(COMMON_BUF.as_ptr().add(start), domain.as_ptr(), domain_len) {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline(always)]
+unsafe fn set_ai_result(addr_type: i32, addr_off: usize, addr_len: i32) {
+    set_res(36, if is_ai_domain(addr_type, addr_off, addr_len as usize) { 1 } else { 0 });
+}
+
+/// 检查 COMMON_BUF 起始处的地址，供 WASM 外部解密 Shadowsocks 地址后复用相同的字节扫描。
+#[no_mangle]
+pub unsafe extern "C" fn isAiDomainWasm(addr_type: i32, addr_len: i32) -> bool {
+    addr_len > 0 && is_ai_domain(addr_type, 0, addr_len as usize)
 }
 
 /// 极速设置 RESULT 槽位
@@ -151,7 +267,7 @@ unsafe fn write_handshake(data: &[u8]) {
     core::ptr::copy_nonoverlapping(data.as_ptr(), COMMON_BUF.as_mut_ptr(), data.len());
 }
 
-/// 分层块比较: simd128 > 64 > 32 > 16 > 8
+/// 分层块比较：simd128 > 64 > 32 > 16 > 8
 #[inline(always)]
 unsafe fn eq_bytes_u64(a: *const u8, b: *const u8, len: usize) -> bool {
     let mut off = 0usize;
@@ -199,7 +315,7 @@ unsafe fn eq_bytes_u64(a: *const u8, b: *const u8, len: usize) -> bool {
     true
 }
 
-/// 向前查找单字节 (SIMD 优先)
+/// 向前查找单字节（优先使用 SIMD）
 #[inline(always)]
 unsafe fn find_byte_forward(data: *const u8, mut i: usize, end: usize, needle: u8) -> Option<usize> {
     use core::arch::wasm32::{i8x16_eq, u8x16_bitmask, u8x16_splat, v128, v128_load};
@@ -221,7 +337,7 @@ unsafe fn find_byte_forward(data: *const u8, mut i: usize, end: usize, needle: u
     None
 }
 
-/// 向后查找单字节 (SIMD 优先)
+/// 向后查找单字节（优先使用 SIMD）
 #[inline(always)]
 unsafe fn find_byte_backward(data: *const u8, start: usize, end: usize, needle: u8) -> Option<usize> {
     let mut tail_end = end;
@@ -245,7 +361,7 @@ unsafe fn find_byte_backward(data: *const u8, start: usize, end: usize, needle: 
     None
 }
 
-/// 查找 URL value 结束位置: '&' 或可选 '='
+/// 查找 URL value 结束位置：'&' 或可选的 '='
 #[inline(always)]
 unsafe fn find_value_end(data: *const u8, mut i: usize, end: usize, stop_eq: bool) -> usize {
     use core::arch::wasm32::{i8x16_eq, u8x16_bitmask, u8x16_splat, v128, v128_load, v128_or};
@@ -335,9 +451,9 @@ unsafe fn extract_sni_wasm(payload_off: usize, len: usize) -> SniStatus {
     }
     let record_len = ((*data.add(3) as usize) << 8) | (*data.add(4) as usize);
     let full_record_len = 5 + record_len;
-    
-    // 【重要修复】：如果未收齐且后续数据能够装入 COMMON_BUF，才要求 NeedMore。
-    // 如果报文总长已超过 2KB 缓冲区物理上限，不可返回 NeedMore（否则死锁假死），直接在已收数据中尽力解析。
+
+    // 如果数据尚未收齐且剩余数据能放入 COMMON_BUF，则返回 NeedMore。
+    // 如果报文总长度超过 2 KB 缓冲区上限，则在已收到的数据中尽力解析，避免一直等待。
     if data_len < full_record_len && full_record_len + payload_off <= COMMON_BUF.len() {
         return SniStatus::NeedMore;
     }
@@ -372,7 +488,7 @@ unsafe fn extract_sni_wasm(payload_off: usize, len: usize) -> SniStatus {
         return SniStatus::NotFound;
     }
 
-    // 6. 扩展块解析
+    // 6. 解析扩展块
     let ext_len = ((*data.add(offset) as usize) << 8) | (*data.add(offset + 1) as usize);
     offset += 2;
     let ext_end = offset + ext_len;
@@ -383,9 +499,9 @@ unsafe fn extract_sni_wasm(payload_off: usize, len: usize) -> SniStatus {
         return SniStatus::NotFound;
     }
 
-    // [SIMD 优化加速] 利用 find_byte_forward 快速判断扩展块中是否存在 0x00
-    // SNI 的 extension_type 为 0x0000，host_name 的 name_type 为 0x00
-    // 若扩展块中完全没有 0x00，则必无 SNI，可直接跳过遍历
+    // [SIMD 优化] 使用 find_byte_forward 快速检查扩展块中是否包含 0x00。
+    // SNI 的 extension_type 为 0x0000，host_name 的 name_type 为 0x00。
+    // 如果扩展块中没有 0x00，则一定没有 SNI，可以跳过遍历。
     if find_byte_forward(data, offset, ext_end, 0x00).is_none() {
         return SniStatus::NotFound;
     }
@@ -396,7 +512,7 @@ unsafe fn extract_sni_wasm(payload_off: usize, len: usize) -> SniStatus {
         offset += 4;
 
         if ext_type == 0x0000 {
-            // 【安全防御】：畸形包防御，SNI 数据至少包含 2 字节的 server_name_list 长度
+            // 防御畸形数据：SNI 扩展至少需要 2 字节的 server_name_list 长度。
             if elen < 2 || offset + elen > ext_end {
                 break;
             }
@@ -423,7 +539,7 @@ unsafe fn extract_sni_wasm(payload_off: usize, len: usize) -> SniStatus {
     SniStatus::NotFound
 }
 
-/// 统一的 SNI 嗅探应用辅助函数（体积优化版）
+/// 统一应用 SNI 嗅探结果的辅助函数（优化体积）。
 #[inline(always)]
 unsafe fn apply_sni_sniff(
     at: i32,
@@ -454,11 +570,12 @@ unsafe fn apply_sni_sniff(
 #[no_mangle]
 pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
     let len = chunk_len as usize;
+    *RESULT.get_unchecked_mut(36) = 0; // 每次解析前清除 AI 域名标志
     *RESULT.get_unchecked_mut(12) = 0; // [12] 回包长度归零
-    *RESULT.get_unchecked_mut(4) = 0;  // [4] SOCKS5 下一步状态归零
-    *RESULT.get_unchecked_mut(14) = 0; // [14] 是否需要更多数据归零 (0:不需要, 1:需要)
+    *RESULT.get_unchecked_mut(4) = 0; // [4] SOCKS5 下一步状态归零
+    *RESULT.get_unchecked_mut(14) = 0; // [14] 是否需要更多数据归零（0：不需要，1：需要）
 
-    // 1. SOCKS5 状态处理
+    // 1. 处理 SOCKS5 状态
     if step == 1 {
         let auth_len = *RESULT.get_unchecked(3) as usize;
         if len < auth_len {
@@ -474,7 +591,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
         let match_auth = eq_bytes_u64(cb, sa, auth_len);
         if match_auth {
             write_handshake(&[1, 0]);
-            *RESULT.get_unchecked_mut(4) = 2; // 下一步: 等待请求
+            *RESULT.get_unchecked_mut(4) = 2; // 下一步：等待请求
         } else {
             write_handshake(&[1, 1]);
         }
@@ -514,6 +631,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
         set_res(8, if p == 53 { 1 } else { 0 });
         set_res(9, as_ as i32);
         set_res(10, al);
+        set_ai_result(at, as_, al);
         set_res(11, 4);
         write_handshake(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
         return true;
@@ -619,6 +737,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
                         set_res(8, if port == 53 { 1 } else { 0 });
                         set_res(9, 8);
                         set_res(10, (last_colon - 8) as i32);
+                        set_ai_result(3, 8, (last_colon - 8) as i32);
                         set_res(11, 3);
                         write_handshake(b"HTTP/1.1 200 Connection Established\r\n\r\n");
                         return true;
@@ -691,6 +810,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
                     set_res(8, if p == 53 { 1 } else { 0 });
                     set_res(9, final_as);
                     set_res(10, final_al);
+                    set_ai_result(final_at, final_as as usize, final_al);
                     set_res(11, 1);
                     return true;
                 }
@@ -729,6 +849,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
                 set_res(8, if p == 53 { 1 } else { 0 });
                 set_res(9, final_as);
                 set_res(10, final_al);
+                set_ai_result(final_at, final_as as usize, final_al);
                 set_res(11, 1);
                 return true;
             }
@@ -790,6 +911,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
             set_res(8, if p == 53 { 1 } else { 0 });
             set_res(9, final_as);
             set_res(10, final_al);
+            set_ai_result(final_at, final_as as usize, final_al);
             set_res(11, 0);
             write_handshake(&[b0, 0]);
             return true;
@@ -829,12 +951,13 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
             set_res(8, if p == 53 { 1 } else { 0 });
             set_res(9, final_as);
             set_res(10, final_al);
+            set_ai_result(final_at, final_as as usize, final_al);
             set_res(11, 2);
             return true;
         }
     }
 
-    // fallback: 如果是非明确SS特征头，且极有可能属于 Trojan/Vless 因为数据极短导致还未完成校验，给予最后一次保底等待
+    // 回退处理：非明确的 Shadowsocks 特征头可能是尚未收完的 Trojan/VLESS 请求，继续等待更多数据。
     if at != 1 && at != 3 && at != 4 {
         if *RESULT.get_unchecked(1) == 1 && len < 56 {
             *RESULT.get_unchecked_mut(14) = 1;
@@ -850,7 +973,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
 }
 
 // ==========================================
-// SHA224 算法实现 (专用于 Trojan 密码 Hash)
+// SHA224 算法实现（专用于 Trojan 密码 Hash）
 // ==========================================
 
 const K: [u32; 64] = [
@@ -1036,7 +1159,7 @@ unsafe fn starts_with_ignore_case(data: &[u8], prefix: &[u8]) -> bool {
     )
 }
 
-/// 极速匹配 URL 参数分隔符
+/// 快速匹配 URL 参数分隔符
 #[inline(always)]
 unsafe fn match_separator(d: &[u8]) -> Option<usize> {
     let len = d.len();
@@ -1117,7 +1240,7 @@ pub unsafe extern "C" fn parseUrlWasm(url_len: i32) {
     let len = url_len as usize;
     let data_ptr = COMMON_BUF.as_ptr();
     let mut is_all = false;
-    
+
     for idx in [15, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] {
         set_res(idx, -1);
     }
@@ -1137,7 +1260,7 @@ pub unsafe extern "C" fn parseUrlWasm(url_len: i32) {
 
         let rem_len = len - i;
         let rem_data = core::slice::from_raw_parts(data_ptr.add(i), rem_len);
-        
+
         // [分支] 全局标志判定
         if starts_with_ignore_case(rem_data, b"proxyall") {
             is_all = true;
@@ -1154,20 +1277,20 @@ pub unsafe extern "C" fn parseUrlWasm(url_len: i32) {
             i += 6;
             continue;
         }
-        
+
         let mut matched = false;
         // [循环] 参数匹配
         for j in 0..25 {
             let key = URL_PARSE_KEYS.get_unchecked(j);
             let k_len = key.buf.len();
-            
+
             if i + k_len < len && starts_with_ignore_case(rem_data, key.buf) {
                 let after_key = core::slice::from_raw_parts(data_ptr.add(i + k_len), len - i - k_len);
                 if let Some(s_len) = match_separator(after_key) {
                     let is_custom_sep = s_len > 1;
                     let v_start = i + k_len + s_len;
                     let v_end = find_value_end(data_ptr, v_start, len, is_custom_sep);
-                    
+
                     if v_end > v_start {
                         if key.is_g {
                             is_all = true;

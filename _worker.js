@@ -30,18 +30,19 @@ const flushTime = 4;                 // 4ms
 const ssAeadEncryptCount = 16;
 // ---------------------------------------------------------------------------------
 /**- **警告**: worker最大支持6，超过6没意义*/
-let concurrency = 4;//socket获取并发数
+const concurrency = 4;//socket获取并发数
 const enableSniSniff = false;//域名嗅探开关(支持ss vless trojan)
 // ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
 // ---------------------------------------------------------------------------------
 //出站socket获取顺序，全局模式下按数组顺序，非全局为：直连>socks>http>https>sstp>turn>turns>nat64>proxyip
 const proxyStrategyOrder = ['socks', 'http', 'https', 'sstp', 'turn', 'turns', 'nat64'];
+const aiProxyip = 'kr.william.us.ci';//香港地区cf cdn ai分流第三方proxyip
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
 const instance = new WebAssembly.Instance(wasmModule);
-const {memory, getUuidPtr, getResultPtr, getDataPtr, getHttpAuthPtr, getSocks5AuthPtr, parseProtocolWasm, parseUrlWasm, initCredentialsWasm, getProxyHostWasm} = instance.exports;
-const wasmMem = new Uint8Array(memory.buffer), wasmRes = new Int32Array(memory.buffer, getResultPtr(), 36), dataPtr = getDataPtr();
+const {memory, getUuidPtr, getResultPtr, getDataPtr, getHttpAuthPtr, getSocks5AuthPtr, parseProtocolWasm, parseUrlWasm, isAiDomainWasm, initCredentialsWasm, getProxyHostWasm} = instance.exports;
+const wasmMem = new Uint8Array(memory.buffer), wasmRes = new Int32Array(memory.buffer, getResultPtr(), 37), dataPtr = getDataPtr();
 const getProxyHost = () => {
     getProxyHostWasm();
     const p = dataPtr;
@@ -53,14 +54,18 @@ const getProxyHost = () => {
     );
 };
 const proxyHost = getProxyHost(), traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
-let currentColo = null, pendingPromise = null;
+let colo = null, currentColo = null, pendingPromise = null;
 const getCurrentColo = () => {
     if (currentColo !== null) return currentColo;
     if (pendingPromise !== null) return pendingPromise;
     return pendingPromise = fetch(traceUrl, {signal: AbortSignal.timeout(200)}).then(r => r.text()).then(t => {
         const i = t.indexOf("colo=");
-        return currentColo = i !== -1 ? t.slice(i + 5, i + 8) + '.' + proxyHost : proxyHost
-    }).catch(() => currentColo = proxyHost).finally(() => {pendingPromise = null})
+        colo = i !== -1 ? t.slice(i + 5, i + 8) : '';
+        return currentColo = colo ? colo + '.' + proxyHost : proxyHost;
+    }).catch(() => {
+        colo = '';
+        return currentColo = proxyHost;
+    }).finally(() => {pendingPromise = null});
 };
 const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
 const errorHtmlUrl = 'https://1345695.github.io/index-404-html/';
@@ -1310,9 +1315,15 @@ const establishTcpConnection = async (parsedRequest, request) => {
     const cachedResult = urlListCacheDict.get(clean);
     if (cachedResult !== undefined) {
         list = cachedResult.list, speed = cachedResult.speed;
+        if (cachedResult.aiList) {
+            if (colo === null) await getCurrentColo();
+            if (colo === 'HKG' && parsedRequest.isAiDomain) list = cachedResult.aiList;
+        }
     } else {
-        if (clean.length < 6 || clean.length > 1024) {
-            list.push({type: 0}, {type: 3}, {type: 3, param: proxyHost});
+        let normalList = [], aiList = null;
+        if (clean.length < 6 || clean.length > 2048) {
+            normalList.push({type: 0}, {type: 3}, {type: 3, param: proxyHost});
+            aiList = [{type: 3, param: aiProxyip}, {type: 3}, {type: 3, param: proxyHost}];
         } else {
             const urlBytes = textEncoder.encode(clean);
             wasmMem.set(urlBytes, dataPtr);
@@ -1321,12 +1332,12 @@ const establishTcpConnection = async (parsedRequest, request) => {
             const s5Val = getUrlParam(r[15], r[16]), httpVal = getUrlParam(r[17], r[18]), nat64Val = getUrlParam(r[19], r[20]), turnVal = getUrlParam(r[24], r[25]), ipVal = getUrlParam(r[21], r[22]), httpsVal = getUrlParam(r[26], r[27]), txtipVal = getUrlParam(r[28], r[29]), turnsVal = getUrlParam(r[32], r[33]), sstpVal = getUrlParam(r[34], r[35]);
             speed = getUrlParam(r[30], r[31]);
             const proxyAll = r[23] === 1;
-            !proxyAll && list.push({type: 0});
-            const add = (v, t, txt) => {
+            !proxyAll && normalList.push({type: 0});
+            const add = (targetList, v, t, txt) => {
                 if (!v) return;
                 const parts = decodeURIComponent(v).split(',').filter(Boolean);
                 if (txt) {
-                    for (let i = 0; i < parts.length; i++) list.push({type: t, param: parts[i], txt});
+                    for (let i = 0; i < parts.length; i++) targetList.push({type: t, param: parts[i], txt});
                 } else if (parts.length) {
                     const parsedParams = parts.map(part => {
                         if (t === 4) return {nat64Auth: part, proxyAll};
@@ -1337,22 +1348,30 @@ const establishTcpConnection = async (parsedRequest, request) => {
                         }
                         return part;
                     });
-                    list.push({type: t, param: parsedParams, concurrent: true});
+                    targetList.push({type: t, param: parsedParams, concurrent: true});
                 }
             };
-            for (const k of proxyStrategyOrder) k === 'socks' ? add(s5Val, 1) : k === 'http' ? add(httpVal, 2) : k === 'https' ? add(httpsVal, 6) : k === 'sstp' ? add(sstpVal, 8) : k === 'turn' ? add(turnVal, 5) : k === 'turns' ? add(turnsVal, 7) : add(nat64Val, 4);
+            for (const k of proxyStrategyOrder) k === 'socks' ? add(normalList, s5Val, 1) : k === 'http' ? add(normalList, httpVal, 2) : k === 'https' ? add(normalList, httpsVal, 6) : k === 'sstp' ? add(normalList, sstpVal, 8) : k === 'turn' ? add(normalList, turnVal, 5) : k === 'turns' ? add(normalList, turnsVal, 7) : add(normalList, nat64Val, 4);
             if (proxyAll) {
-                !list.length && list.push({type: 0});
+                !normalList.length && normalList.push({type: 0});
             } else {
-                add(ipVal, 3), add(txtipVal, 3, true);
-                list.push({type: 3}, {type: 3, param: proxyHost});
+                aiList = normalList.slice(1);
+                add(normalList, ipVal, 3), add(normalList, txtipVal, 3, true);
+                normalList.push({type: 3}, {type: 3, param: proxyHost});
+                add(aiList, ipVal || aiProxyip, 3), add(aiList, txtipVal, 3, true);
+                aiList.push({type: 3}, {type: 3, param: proxyHost});
             }
         }
+        list = normalList;
         const oldKey = urlListCacheKeys[urlListCacheIndex];
         if (oldKey !== undefined) urlListCacheDict.delete(oldKey);
         urlListCacheKeys[urlListCacheIndex] = clean;
-        urlListCacheDict.set(clean, {list, speed});
+        urlListCacheDict.set(clean, {list: normalList, aiList, speed});
         urlListCacheIndex = (urlListCacheIndex + 1) % urlParamCacheLimit;
+        if (aiList) {
+            if (colo === null) await getCurrentColo();
+            if (colo === 'HKG' && parsedRequest.isAiDomain) list = aiList;
+        }
     }
     for (let i = 0; i < list.length; i++) {
         try {
@@ -1495,7 +1514,9 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
                                 if (sniRes?.needMore && allowNeedMore) return state.needMore = true;
                                 sniRes?.len && (addrType = 3, addrOffset = dataOffset + sniRes.offset, addrLen = sniRes.len);
                             }
-                            parsedRequest = {addrType, addrBytes: plain.subarray(addrOffset, addrOffset + addrLen), dataOffset, port, isDns: port === 53};
+                            const addrBytes = plain.subarray(addrOffset, addrOffset + addrLen);
+                            wasmMem.set(addrBytes, dataPtr);
+                            parsedRequest = {addrType, addrBytes, dataOffset, port, isDns: port === 53, isAiDomain: isAiDomainWasm(addrType, addrLen)};
                             const encryptCtx = await createSsAeadCtx();
                             isSs = true, state.ssInbound = decryptCtx, state.ssOutbound = encryptCtx, state.ssResponseSalt = encryptCtx.salt;
                         }
@@ -1505,7 +1526,7 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         }
         if (!isSs) return close();
     } else {
-        state.socks5State = 0, parsedRequest = {addrType: r[5], port: r[6], dataOffset: r[7], isDns: r[8] === 1, addrBytes: chunk.subarray(r[9], r[9] + r[10]), isHttp: r[11] === 3}, payload = chunk.subarray(parsedRequest.dataOffset);
+        state.socks5State = 0, parsedRequest = {addrType: r[5], port: r[6], dataOffset: r[7], isDns: r[8] === 1, addrBytes: chunk.subarray(r[9], r[9] + r[10]), isHttp: r[11] === 3, isAiDomain: r[36] === 1}, payload = chunk.subarray(parsedRequest.dataOffset);
     }
     if (parsedRequest.isDns) {
         const dnsWriter = createDnsWriter(state, writable, close, !(isEarlyData && payload.byteLength));

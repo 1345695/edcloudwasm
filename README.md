@@ -174,4 +174,5 @@ mv protocol.opt.wasm protocol.wasm
 - [AK大佬 (Alexandre_Kojeve)](https://t.me/Notif_Chat)
 - [天书 (HeroCore)](https://t.me/HeroCore)
 - [zizifn/edgetunnel](https://github.com/zizifn/edgetunnel)
+- [Einsiedler (jacobax)](https://github.com/jacobax/snippets)
 
