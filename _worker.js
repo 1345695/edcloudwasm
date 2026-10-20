@@ -16,7 +16,7 @@ const ssAeadPassword = ''; // 可在环境变量配置，变量名称为SSPASS
 // ---------------------------------------------------------------------------------
 /** 缓冲区最大大小。*/
 /**- **警告**: 大小为maxChunkLen的整数倍使用率最高，不然会有空间浪费。*/
-const bufferSize = 256 * 1024;         // 256KB
+const bufferSize = 512 * 1024;         // 512KB
 /** 开启限速缓存模式的大包流量阈值。*/
 const startThreshold = 50 * 1024 * 1024; //50MB
 /** 从TCP读取的数据块最大大小，改小会成倍增加传输相同流量的cpu开销，同时会因为写满而增加数据进入缓冲区限速的概率*/
@@ -1639,7 +1639,7 @@ export default {
         if (request.method === 'POST' && request.headers.get('content-type')?.startsWith('application/grpc')) return handleXwebPost(request);
         if (request.headers.get('Upgrade') === 'websocket') {
             const {0: clientSocket, 1: webSocket} = new WebSocketPair();
-            webSocket.accept({allowHalfOpen: true}), webSocket.binaryType = "arraybuffer";
+            webSocket.accept(), webSocket.binaryType = "arraybuffer";
             handleWebSocketConn(webSocket, request);
             return new Response(null, {status: 101, webSocket: clientSocket});
         }
