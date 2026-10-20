@@ -562,6 +562,25 @@ unsafe fn apply_sni_sniff(
     }
 }
 
+/// 嗅探关闭时，仅用 ClientHello SNI 补充 AI 域名判断，不改写原目标地址结果。
+#[inline(always)]
+unsafe fn set_ai_result_with_sni_fallback(
+    addr_type: i32,
+    addr_off: usize,
+    addr_len: i32,
+    payload_off: usize,
+    len: usize,
+) {
+    if *RESULT.get_unchecked(13) == 0 && addr_type != 3 && payload_off < len {
+        if let SniStatus::Found(sni_off, sni_len) = extract_sni_wasm(payload_off, len) {
+            set_ai_result(3, sni_off, sni_len as i32);
+            return;
+        }
+    }
+
+    set_ai_result(addr_type, addr_off, addr_len);
+}
+
 // ==========================================
 // 核心入站协议解析逻辑
 // ==========================================
@@ -631,7 +650,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
         set_res(8, if p == 53 { 1 } else { 0 });
         set_res(9, as_ as i32);
         set_res(10, al);
-        set_ai_result(at, as_, al);
+        set_ai_result_with_sni_fallback(at, as_, al, full_len, len);
         set_res(11, 4);
         write_handshake(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
         return true;
@@ -737,7 +756,13 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
                         set_res(8, if port == 53 { 1 } else { 0 });
                         set_res(9, 8);
                         set_res(10, (last_colon - 8) as i32);
-                        set_ai_result(3, 8, (last_colon - 8) as i32);
+                        set_ai_result_with_sni_fallback(
+                            3,
+                            8,
+                            (last_colon - 8) as i32,
+                            len,
+                            len,
+                        );
                         set_res(11, 3);
                         write_handshake(b"HTTP/1.1 200 Connection Established\r\n\r\n");
                         return true;
@@ -810,7 +835,13 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
                     set_res(8, if p == 53 { 1 } else { 0 });
                     set_res(9, final_as);
                     set_res(10, final_al);
-                    set_ai_result(final_at, final_as as usize, final_al);
+                    set_ai_result_with_sni_fallback(
+                        final_at,
+                        final_as as usize,
+                        final_al,
+                        full_len,
+                        len,
+                    );
                     set_res(11, 1);
                     return true;
                 }
@@ -849,7 +880,13 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
                 set_res(8, if p == 53 { 1 } else { 0 });
                 set_res(9, final_as);
                 set_res(10, final_al);
-                set_ai_result(final_at, final_as as usize, final_al);
+                set_ai_result_with_sni_fallback(
+                    final_at,
+                    final_as as usize,
+                    final_al,
+                    full_len,
+                    len,
+                );
                 set_res(11, 1);
                 return true;
             }
@@ -911,7 +948,13 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
             set_res(8, if p == 53 { 1 } else { 0 });
             set_res(9, final_as);
             set_res(10, final_al);
-            set_ai_result(final_at, final_as as usize, final_al);
+            set_ai_result_with_sni_fallback(
+                final_at,
+                final_as as usize,
+                final_al,
+                full_len,
+                len,
+            );
             set_res(11, 0);
             write_handshake(&[b0, 0]);
             return true;
@@ -951,7 +994,13 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
             set_res(8, if p == 53 { 1 } else { 0 });
             set_res(9, final_as);
             set_res(10, final_al);
-            set_ai_result(final_at, final_as as usize, final_al);
+            set_ai_result_with_sni_fallback(
+                final_at,
+                final_as as usize,
+                final_al,
+                full_len,
+                len,
+            );
             set_res(11, 2);
             return true;
         }
