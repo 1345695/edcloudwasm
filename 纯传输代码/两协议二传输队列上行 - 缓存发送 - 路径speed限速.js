@@ -363,7 +363,9 @@ const establishTcpConnection = async (parsedRequest, request) => {
                     for (let i = 0; i < parts.length; i++) targetList.push({type: t, param: parts[i], txt});
                 } else if (parts.length) {
                     const parsedParams = parts.map(part => {
-                        if (t === 1 || t === 2 || t === 6) return parseAuthString(part);
+                        if (t === 1) return parseAuthString(part, 1080);
+                        if (t === 2) return parseAuthString(part, 80);
+                        if (t === 6) return parseAuthString(part, 443);
                         return part;
                     });
                     targetList.push({type: t, param: parsedParams, concurrent: true});

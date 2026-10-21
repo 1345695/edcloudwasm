@@ -1341,7 +1341,11 @@ const establishTcpConnection = async (parsedRequest, request) => {
                 } else if (parts.length) {
                     const parsedParams = parts.map(part => {
                         if (t === 4) return {nat64Auth: part, proxyAll};
-                        if (t === 1 || t === 2 || t === 5 || t === 6 || t === 7) return parseAuthString(part);
+                        if (t === 1) return parseAuthString(part, 1080);
+                        if (t === 2) return parseAuthString(part, 80);
+                        if (t === 6) return parseAuthString(part, 443);
+                        if (t === 5) return parseAuthString(part, 3478);
+                        if (t === 7) return parseAuthString(part, 5349);
                         if (t === 8) {
                             const auth = parseAuthString(part, 443);
                             return auth.username && auth.password ? auth : {...auth, username: 'vpn', password: 'vpn'};
