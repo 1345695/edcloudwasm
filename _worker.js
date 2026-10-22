@@ -1498,9 +1498,9 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         const handshake = wasmMem.slice(dataPtr, dataPtr + hLen);
         writable.send(handshake);
     }
+    if (allowNeedMore && r[14] === 1) return state.needMore = true;
     if (!success) {
         if (r[4] > 0) return state.socks5State = r[4];
-        if (allowNeedMore && r[14] === 1) return state.needMore = true;
         if (ssEnabled && chunk.length >= 34) {
             try {
                 const decryptCtx = await createSsAeadCtx(chunk.subarray(0, 16)), plain = await ssAeadDecryptFeed(decryptCtx, chunk.subarray(16)), plainLen = plain.length;
@@ -1515,7 +1515,6 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
                             payload = plain.subarray(dataOffset);
                             if (enableSniSniff && addrType !== 3 && payload.length > 0) {
                                 const sniRes = extractSniBytes(payload);
-                                if (sniRes?.needMore && allowNeedMore) return state.needMore = true;
                                 sniRes?.len && (addrType = 3, addrOffset = dataOffset + sniRes.offset, addrLen = sniRes.len);
                             }
                             const addrBytes = plain.subarray(addrOffset, addrOffset + addrLen);

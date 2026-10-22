@@ -81,7 +81,6 @@ pub unsafe extern "C" fn getSocks5AuthPtr() -> *const u8 {
     core::ptr::addr_of!(SOCKS5_AUTH) as *const u8
 }
 
-
 /// 生成随机大小写的 proxy 域名（proxy.zjcloud.us.ci），写入 COMMON_BUF 并返回长度（19）
 /// 使用纯数字码表和位运算处理，不包含明文字符串
 static mut RNG_STATE: u32 = 0x853c49e6;
@@ -229,6 +228,31 @@ unsafe fn is_ai_domain(addr_type: i32, addr_off: usize, addr_len: usize) -> bool
 #[inline(always)]
 unsafe fn set_ai_result(addr_type: i32, addr_off: usize, addr_len: i32) {
     set_res(36, if is_ai_domain(addr_type, addr_off, addr_len as usize) { 1 } else { 0 });
+}
+
+/// 对 VLESS、Trojan 和 Shadowsocks 用 ClientHello SNI 补充 IP 目标的 AI 判断。
+#[inline(always)]
+unsafe fn set_ai_result_with_sni_fallback(
+    addr_type: i32,
+    addr_off: usize,
+    addr_len: i32,
+    payload_off: usize,
+    len: usize,
+) {
+    if *RESULT.get_unchecked(13) & 1 == 0 && addr_type != 3 && payload_off < len {
+        match extract_sni_wasm(payload_off, len) {
+            SniStatus::Found(sni_off, sni_len) => {
+                set_ai_result(3, sni_off, sni_len as i32);
+                return;
+            }
+            SniStatus::NeedMore if len < COMMON_BUF.len() => {
+                *RESULT.get_unchecked_mut(14) = 1;
+            }
+            SniStatus::NeedMore | SniStatus::NotFound => {}
+        }
+    }
+
+    set_ai_result(addr_type, addr_off, addr_len);
 }
 
 /// 检查 COMMON_BUF 起始处的地址，供 WASM 外部解密 Shadowsocks 地址后复用相同的字节扫描。
@@ -539,7 +563,7 @@ unsafe fn extract_sni_wasm(payload_off: usize, len: usize) -> SniStatus {
     SniStatus::NotFound
 }
 
-/// 统一应用 SNI 嗅探结果的辅助函数（优化体积）。
+/// SNI 按配置执行；启用 AI ClientHello 检查时单独等待完整握手。
 #[inline(always)]
 unsafe fn apply_sni_sniff(
     at: i32,
@@ -548,37 +572,20 @@ unsafe fn apply_sni_sniff(
     full_len: usize,
     len: usize,
 ) -> Option<(i32, i32, i32)> {
-    if *RESULT.get_unchecked(13) == 1 && at != 3 && len >= full_len {
+    if at != 3 && (*RESULT.get_unchecked(13) & 1) != 0 && len >= full_len {
         match extract_sni_wasm(full_len, len) {
             SniStatus::Found(soff, slen) => Some((3, soff as i32, slen as i32)),
             SniStatus::NeedMore => {
-                *RESULT.get_unchecked_mut(14) = 1;
-                None
+                if len < COMMON_BUF.len() {
+                    *RESULT.get_unchecked_mut(14) = 1;
+                }
+                Some((at, as_ as i32, al))
             }
             SniStatus::NotFound => Some((at, as_ as i32, al)),
         }
     } else {
         Some((at, as_ as i32, al))
     }
-}
-
-/// 嗅探关闭时，仅用 ClientHello SNI 补充 AI 域名判断，不改写原目标地址结果。
-#[inline(always)]
-unsafe fn set_ai_result_with_sni_fallback(
-    addr_type: i32,
-    addr_off: usize,
-    addr_len: i32,
-    payload_off: usize,
-    len: usize,
-) {
-    if *RESULT.get_unchecked(13) == 0 && addr_type != 3 && payload_off < len {
-        if let SniStatus::Found(sni_off, sni_len) = extract_sni_wasm(payload_off, len) {
-            set_ai_result(3, sni_off, sni_len as i32);
-            return;
-        }
-    }
-
-    set_ai_result(addr_type, addr_off, addr_len);
 }
 
 // ==========================================
@@ -650,7 +657,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
         set_res(8, if p == 53 { 1 } else { 0 });
         set_res(9, as_ as i32);
         set_res(10, al);
-        set_ai_result_with_sni_fallback(at, as_, al, full_len, len);
+        set_ai_result(at, as_, al);
         set_res(11, 4);
         write_handshake(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
         return true;
@@ -756,13 +763,7 @@ pub unsafe extern "C" fn parseProtocolWasm(chunk_len: i32, step: i32) -> bool {
                         set_res(8, if port == 53 { 1 } else { 0 });
                         set_res(9, 8);
                         set_res(10, (last_colon - 8) as i32);
-                        set_ai_result_with_sni_fallback(
-                            3,
-                            8,
-                            (last_colon - 8) as i32,
-                            len,
-                            len,
-                        );
+                        set_ai_result(3, 8, (last_colon - 8) as i32);
                         set_res(11, 3);
                         write_handshake(b"HTTP/1.1 200 Connection Established\r\n\r\n");
                         return true;
