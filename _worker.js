@@ -405,7 +405,7 @@ const tlsStreamAdapter = (tls, initial = new Uint8Array(0)) => {
 };
 const staticHeaders = `User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\r\nProxy-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n`;
 const encodedStaticHeaders = textEncoder.encode(staticHeaders);
-const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addrBytes, limit, useTls = false) => {
+const connectViaHttpProxy = async (httpHost, targetPortNum, httpAuth, limit, useTls = false) => {
     const {username, password, hostname, port} = httpAuth;
     let proxySocket, tlsClient = null, isCustomTls = false;
     const proxyIsIp = addrTypeIs(hostname) !== 3;
@@ -430,7 +430,6 @@ const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addr
             return null;
         }
     }
-    const httpHost = binaryAddrToString(targetAddrType, addrBytes);
     let dynamicHeaders = `CONNECT ${httpHost}:${targetPortNum} HTTP/1.1\r\nHost: ${httpHost}:${targetPortNum}\r\n`;
     if (username) dynamicHeaders += `Proxy-Authorization: Basic ${btoa(`${username}:${password || ''}`)}\r\n`;
     const fullHeaders = new Uint8Array(dynamicHeaders.length * 3 + encodedStaticHeaders.length);
@@ -763,12 +762,11 @@ const createSstpTcp = (sstp, sourceIp, targetIp, targetPort) => {
     };
     return {frame, match, handshake, get sequence() {return sequence}, set sequence(value) {sequence = value}, get acknowledgement() {return acknowledgement}, set acknowledgement(value) {acknowledgement = value}};
 };
-const resolveSstpTargetIpv4 = async ({addrType, addrBytes, isHttp}) => {
-    const targetIp = binaryAddrToString(addrType, addrBytes);
-    if (isHttp) addrType = addrTypeIs(targetIp);
-    if (addrType === 1) return targetIp;
+const resolveSstpTargetIpv4 = async ({addrType, host, isHttp}) => {
+    if (isHttp) addrType = addrTypeIs(host);
+    if (addrType === 1) return host;
     if (addrType !== 3) return null;
-    return (await concurrentDnsResolve(targetIp, 'A'))?.find(r => r.type === 1)?.data ?? null;
+    return (await concurrentDnsResolve(host, 'A'))?.find(r => r.type === 1)?.data ?? null;
 };
 const connectViaSstpProxy = async (sstpAuth, parsedRequest) => {
     if (!sstpAuth || parsedRequest.addrType === 4) return null;
@@ -940,8 +938,8 @@ const readStun = async (rd, buf) => {
     } catch {return null}
 };
 const md5 = async s => new Uint8Array(await crypto.subtle.digest('MD5', textEncoder.encode(s)));
-const connectViaTurnProxy = async ({hostname, port, username, password}, {addrType, port: targetPort, addrBytes, isHttp}, useTls = false) => {
-    let targetIp = binaryAddrToString(addrType, addrBytes);
+const connectViaTurnProxy = async ({hostname, port, username, password}, {addrType, port: targetPort, host, isHttp}, useTls = false) => {
+    let targetIp = host;
     if (isHttp) addrType = addrTypeIs(targetIp);
     if (addrType === 3) {
         targetIp = concurrentDnsResolve(targetIp, 'A').then(ans => ans?.find(r => r.type === 1)?.data ?? null).catch(() => null);
@@ -1231,10 +1229,9 @@ const createDnsWriter = (state, writable, close, closeAfterResponse) => {
         if (offset < buf.byteLength) pending = buf.slice(offset);
     };
 };
-const connectNat64 = async (addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp) => {
+const connectNat64 = async (addrType, hostname, port, nat64Auth, proxyAll, limit, isHttp) => {
     const nat64Prefixes = nat64Auth.charCodeAt(0) === 91 ? nat64Auth.slice(1, -1) : nat64Auth;
     if (!proxyAll) return concurrentConnect(`[${nat64Prefixes}6815:3598]`, port, limit);
-    const hostname = binaryAddrToString(addrType, addrBytes);
     if (isHttp) addrType = addrTypeIs(hostname);
     if (addrType === 3) {
         const ip = (await concurrentDnsResolve(hostname, 'A'))?.find(r => r.type === 1)?.data;
@@ -1283,15 +1280,15 @@ const connectProxyIp = async (param, limit, txt) => {
     return concurrentConnect(host, port, limit);
 };
 const strategyExecutorMap = new Map([
-    [0, ({addrType, port, addrBytes}, _param, limit) => concurrentConnect(binaryAddrToString(addrType, addrBytes), port, limit)],
-    [1, async ({addrType, port, addrBytes}, param, limit, _txt) => connectViaSocksProxy(addrType, port, param, addrBytes, limit)],
-    [2, async ({addrType, port, addrBytes}, param, limit, _txt) => connectViaHttpProxy(addrType, port, param, addrBytes, limit)],
-    [6, async ({addrType, port, addrBytes}, param, limit, _txt) => connectViaHttpProxy(addrType, port, param, addrBytes, limit, true)],
-    [3, async (_parsedRequest, param, limit, txt) => connectProxyIp(param, limit, txt)],
-    [4, async ({addrType, port, addrBytes, isHttp}, param, limit, _txt) => connectNat64(addrType, port, param.nat64Auth, addrBytes, param.proxyAll, limit, isHttp)],
-    [5, async (parsedRequest, param, _limit, _txt) => connectViaTurnProxy(param, parsedRequest)],
-    [7, async (parsedRequest, param, _limit, _txt) => connectViaTurnProxy(param, parsedRequest, true)],
-    [8, async (parsedRequest, param, _limit, _txt) => connectViaSstpProxy(param, parsedRequest)]
+    [0, (req, _param, limit) => concurrentConnect(req.host, req.port, limit)],
+    [1, async (req, param, limit, _txt) => connectViaSocksProxy(req.addrType, req.port, param, req.addrBytes, limit)],
+    [2, async (req, param, limit, _txt) => connectViaHttpProxy(req.host, req.port, param, limit)],
+    [6, async (req, param, limit, _txt) => connectViaHttpProxy(req.host, req.port, param, limit, true)],
+    [3, async (_req, param, limit, txt) => connectProxyIp(param, limit, txt)],
+    [4, async (req, param, limit, _txt) => connectNat64(req.addrType, req.host, req.port, param.nat64Auth, param.proxyAll, limit, req.isHttp)],
+    [5, async (req, param, _limit, _txt) => connectViaTurnProxy(param, req)],
+    [7, async (req, param, _limit, _txt) => connectViaTurnProxy(param, req, true)],
+    [8, async (req, param, _limit, _txt) => connectViaSstpProxy(param, req)]
 ]);
 const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
     const attempts = params.map(param => Promise.resolve().then(() => exec(parsedRequest, param, limit, txt)));
@@ -1519,7 +1516,7 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
                             }
                             const addrBytes = plain.subarray(addrOffset, addrOffset + addrLen);
                             wasmMem.set(addrBytes, dataPtr);
-                            parsedRequest = {addrType, addrBytes, dataOffset, port, isDns: port === 53, isAiDomain: isAiDomainWasm(addrType, addrLen)};
+                            parsedRequest = {addrType, addrBytes, host: binaryAddrToString(addrType, addrBytes), dataOffset, port, isDns: port === 53, isAiDomain: isAiDomainWasm(addrType, addrLen)};
                             const encryptCtx = await createSsAeadCtx();
                             isSs = true, state.ssInbound = decryptCtx, state.ssOutbound = encryptCtx, state.ssResponseSalt = encryptCtx.salt;
                         }
@@ -1529,7 +1526,7 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         }
         if (!isSs) return close();
     } else {
-        state.socks5State = 0, parsedRequest = {addrType: r[5], port: r[6], dataOffset: r[7], isDns: r[8] === 1, addrBytes: chunk.subarray(r[9], r[9] + r[10]), isHttp: r[11] === 3, isAiDomain: r[36] === 1}, payload = chunk.subarray(parsedRequest.dataOffset);
+        state.socks5State = 0, parsedRequest = {addrType: r[5], port: r[6], dataOffset: r[7], isDns: r[8] === 1, addrBytes: chunk.subarray(r[9], r[9] + r[10]), isHttp: r[11] === 3, isAiDomain: r[36] === 1}, parsedRequest.host = binaryAddrToString(parsedRequest.addrType, parsedRequest.addrBytes), payload = chunk.subarray(parsedRequest.dataOffset);
     }
     if (parsedRequest.isDns) {
         const dnsWriter = createDnsWriter(state, writable, close, !(isEarlyData && payload.byteLength));
