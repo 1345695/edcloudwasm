@@ -1871,6 +1871,7 @@ const connectProxyIp = async (param, limit, txt) => {
     const [host, port] = parseHostPort(param, 443);
     return concurrentConnect(host, port, limit);
 };
+const strategyTypeMap = {socks: 1, http: 2, https: 6, sstp: 8, turn: 5, turns: 7, nat64: 4};
 const strategyExecutorMap = new Map([
     [0, (req, _param, limit) => concurrentConnect(req.host, req.port, limit)],
     [1, async (req, param, limit, _txt) => connectViaSocksProxy(req.addrType, req.port, param, req.addrBytes, limit)],
@@ -1889,6 +1890,7 @@ const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
 const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|gturns|turnsall|gsstp|sstpall|sstp|s5|socks|http|https|nat64|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
+const portMap = {1: 1080, 2: 80, 5: 3478, 6: 443, 7: 5349};
 const establishTcpConnection = async (parsedRequest, request) => {
     let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [], speed;
     if (l > 3 && clean.charCodeAt(l - 4) === 47 && clean.charCodeAt(l - 3) === 84 && clean.charCodeAt(l - 2) === 117 && clean.charCodeAt(l - 1) === 110) {
@@ -1900,12 +1902,10 @@ const establishTcpConnection = async (parsedRequest, request) => {
     let cachedResult = urlListCacheDict.get(clean);
     if (cachedResult !== undefined) {
         speed = cachedResult.speed;
-        if (!cachedResult.aiList) {
-            list = cachedResult.list;
-        } else {
+        list = cachedResult.list;
+        if (cachedResult.aiList && parsedRequest.isAiDomain) {
             if (colo === null) await getCurrentColo();
-            const isHkgAi = colo === 'HKG' && parsedRequest.isAiDomain;
-            list = isHkgAi ? cachedResult.aiList : cachedResult.list;
+            if (colo === 'HKG') list = cachedResult.aiList;
         }
     } else {
         let normalList = [], aiList = null;
@@ -1918,7 +1918,15 @@ const establishTcpConnection = async (parsedRequest, request) => {
             let m;
             while ((m = paramRegex.exec(clean))) {p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true}
             if (p.speed) speed = p.speed;
-            const s5 = p.gs5 || p.s5all || p.s5 || p.socks, http = p.ghttp || p.httpall || p.http, https = p.ghttps || p.httpsall || p.https, sstp = p.gsstp || p.sstpall || p.sstp, nat64 = p.gnat64 || p.nat64all || p.nat64, turn = p.gturn || p.turnall || p.turn, turns = p.gturns || p.turnsall || p.turns;
+            const proxyValueMap = {
+                socks: p.gs5 || p.s5all || p.s5 || p.socks,
+                http: p.ghttp || p.httpall || p.http,
+                https: p.ghttps || p.httpsall || p.https,
+                sstp: p.gsstp || p.sstpall || p.sstp,
+                turn: p.gturn || p.turnall || p.turn,
+                turns: p.gturns || p.turnsall || p.turns,
+                nat64: p.gnat64 || p.nat64all || p.nat64
+            };
             const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.gsstp || p.sstpall || p.gnat64 || p.nat64all || p.gturn || p.turnall || p.gturns || p.turnsall || p.proxyall || p.globalproxy || p.global);
             const proxyItems = [];
             const add = (targetList, v, t, txt) => {
@@ -1929,24 +1937,17 @@ const establishTcpConnection = async (parsedRequest, request) => {
                 } else if (parts.length) {
                     const parsedParams = parts.map(part => {
                         if (t === 4) return {nat64Auth: part, proxyAll};
-                        if (t === 1) return parseAuthString(part, 1080);
-                        if (t === 2) return parseAuthString(part, 80);
-                        if (t === 6) return parseAuthString(part, 443);
-                        if (t === 5) return parseAuthString(part, 3478);
-                        if (t === 7) return parseAuthString(part, 5349);
                         if (t === 8) {
                             const auth = parseAuthString(part, 443);
                             return auth.username && auth.password ? auth : {...auth, username: 'vpn', password: 'vpn'};
                         }
+                        if (portMap[t]) return parseAuthString(part, portMap[t]);
                         return part;
                     });
                     targetList.push({type: t, param: parsedParams, concurrent: true});
                 }
             };
-            for (let i = 0; i < proxyStrategyOrder.length; i++) {
-                const k = proxyStrategyOrder[i];
-                add(proxyItems, k === 'socks' ? s5 : k === 'http' ? http : k === 'https' ? https : k === 'sstp' ? sstp : k === 'turn' ? turn : k === 'turns' ? turns : nat64, k === 'socks' ? 1 : k === 'http' ? 2 : k === 'https' ? 6 : k === 'sstp' ? 8 : k === 'turn' ? 5 : k === 'turns' ? 7 : 4);
-            }
+            for (const k of proxyStrategyOrder) add(proxyItems, proxyValueMap[k], strategyTypeMap[k]);
             if (proxyAll) {
                 normalList.push(...proxyItems);
                 if (!normalList.length) normalList.push({type: 0});
@@ -1962,12 +1963,10 @@ const establishTcpConnection = async (parsedRequest, request) => {
         urlListCacheKeys[urlListCacheIndex] = clean;
         urlListCacheDict.set(clean, {list: normalList, aiList, speed});
         urlListCacheIndex = (urlListCacheIndex + 1) % urlParamCacheLimit;
-        if (!aiList) {
-            list = normalList;
-        } else {
+        list = normalList;
+        if (aiList && parsedRequest.isAiDomain) {
             if (colo === null) await getCurrentColo();
-            const isHkgAi = colo === 'HKG' && parsedRequest.isAiDomain;
-            list = isHkgAi ? aiList : normalList;
+            if (colo === 'HKG') list = aiList;
         }
     }
     for (let i = 0; i < list.length; i++) {
