@@ -1,5 +1,4 @@
 // 代码基本都抄的CM和AK大佬和天书大佬的项目，在此感谢各位大佬的无私奉献。
-import {connect} from 'cloudflare:sockets';
 import {TlsClient} from './TlsClient.js';
 import wasmModule from './protocol.wasm';
 const defaultUuid = ''; // 可在环境变量配置，变量名称为UUID，两个地方都不写为不验证uuid
@@ -310,7 +309,8 @@ const addrTypeIs = hostname => {
     const char0 = hostname.charCodeAt(0);
     return (char0 - 48) >>> 0 > 9 ? (char0 === 91 ? 4 : 3) : isIPv4(hostname) ? 1 : 3;
 };
-const createConnect = (hostname, port, socketOptions, socket = connect({hostname, port}, socketOptions)) => socket.opened.then(() => socket);
+let fetcher = null;
+const createConnect = (hostname, port, socketOptions, socket = fetcher.connect({hostname, port}, socketOptions)) => socket.opened.then(() => socket);
 const dohHeaders = {'content-type': 'application/dns-message', 'accept': 'application/dns-message'}, dohJsonHeaders = {headers: {'accept': 'application/dns-json'}};
 const concurrentDnsResolve = async (hostname, recordType) => {
     const q = '?name=' + hostname + '&type=' + recordType;
@@ -614,7 +614,7 @@ const createSstpSession = (username, password) => {
         } else if (messageType === 5 || messageType === 7) throw new Error('SSTP aborted');
     };
     const connectSstp = async (hostname, port) => {
-        socket = connect({hostname, port}, {secureTransport: 'on', allowHalfOpen: false});
+        socket = fetcher.connect({hostname, port}, {secureTransport: 'on', allowHalfOpen: false});
         await socket.opened;
         if (closed) throw new Error('SSTP socket is closed');
         reader = socket.readable.getReader({mode: 'byob'}), writer = socket.writable.getWriter(), serverHost = hostname, serverPort = port;
@@ -1644,6 +1644,7 @@ const handleXwebPost = async (request) => {
 };
 export default {
     async fetch(request, env) {
+        if (!fetcher) fetcher = request.fetcher;
         if (!isInitialized) initializeWasm(env);
         if (request.method === 'POST' && request.headers.get('content-type')?.startsWith('application/grpc')) return handleXwebPost(request);
         if (request.headers.get('Upgrade') === 'websocket') {

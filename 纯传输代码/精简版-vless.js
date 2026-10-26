@@ -1,4 +1,3 @@
-import {connect} from 'cloudflare:sockets';
 const uuid = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 const bufferSize = 512 * 1024;
 const startThreshold = 50 * 1024 * 1024;
@@ -27,11 +26,12 @@ const _h = c => (c > 64 ? (c & 7) + 9 : c & 15);
 const _b = p => (_h(uuid.charCodeAt(p)) << 4) | _h(uuid.charCodeAt(p + 1));
 const U0 = _b(0), U1 = _b(2), U2 = _b(4), U3 = _b(6), U4 = _b(9), U5 = _b(11), U6 = _b(14), U7 = _b(16), U8 = _b(19), U9 = _b(21), U10 = _b(24), U11 = _b(26), U12 = _b(28), U13 = _b(30), U14 = _b(32), U15 = _b(34);
 const textDecoder = new TextDecoder;
+let fetcher = null;
 const concurrentConnect = (hostname, port) => {
     let settled = false;
     const attempts = new Array(concurrency);
     for (let i = 0; i < concurrency; i++) {
-        const socket = connect({hostname, port});
+        const socket = fetcher.connect({hostname, port});
         attempts[i] = socket.opened.then(() => {
             if (settled) {
                 socket.close();
@@ -260,6 +260,7 @@ const handleXwebPost = async (request) => {
 };
 export default {
     async fetch(request) {
+        if (!fetcher) fetcher = request.fetcher;
         if (request.method === 'POST' && request.headers.get('content-type')?.startsWith('application/grpc')) return handleXwebPost(request);
         if (request.headers.get('Upgrade') === 'websocket') {
             const {0: clientSocket, 1: webSocket} = new WebSocketPair();

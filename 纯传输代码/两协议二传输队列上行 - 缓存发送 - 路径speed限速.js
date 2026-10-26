@@ -1,4 +1,3 @@
-import {connect} from 'cloudflare:sockets';
 const uuid = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
 //**警告**:trojan使用的sha224密钥，需要自己计算，当前设置为密码666的密钥
 //**警告**:trojan使用的sha224密钥，需要自己计算，当前设置为密码666的密钥
@@ -80,7 +79,8 @@ const parseAuthString = (authParam) => {
     const [hostname, port] = parseHostPort(hostStr, 1080);
     return {username, password, hostname, port};
 };
-const createConnect = (hostname, port, socketOptions, socket = connect({hostname, port}, socketOptions)) => socket.opened.then(() => socket);
+let fetcher = null;
+const createConnect = (hostname, port, socketOptions, socket = fetcher.connect({hostname, port}, socketOptions)) => socket.opened.then(() => socket);
 const dohHeaders = {'content-type': 'application/dns-message', 'accept': 'application/dns-message'}, dohJsonHeaders = {headers: {'accept': 'application/dns-json'}};
 const concurrentDnsResolve = async (hostname, recordType) => {
     const q = '?name=' + hostname + '&type=' + recordType;
@@ -603,6 +603,7 @@ const handleXwebPost = async (request) => {
 };
 export default {
     async fetch(request) {
+        if (!fetcher) fetcher = request.fetcher;
         if (request.method === 'POST' && request.headers.get('content-type')?.startsWith('application/grpc')) return handleXwebPost(request);
         if (request.headers.get('Upgrade') === 'websocket') {
             const {0: clientSocket, 1: webSocket} = new WebSocketPair();
