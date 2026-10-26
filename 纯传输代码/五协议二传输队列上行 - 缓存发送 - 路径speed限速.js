@@ -38,13 +38,13 @@ const ssAeadPassword = '123456';       // ss协议 aes-128-gcm 密码（notls）
 // ---------------------------------------------------------------------------------
 /** 缓冲区最大大小。*/
 /**- **警告**: 大小为maxChunkLen的整数倍使用率最高，不然会有空间浪费。*/
-const bufferSize = 512 * 1024;         // 512KB
+const bufferSize = 256 * 1024;         // 256KB
 /** 开启限速缓存模式的大包流量阈值。*/
 const startThreshold = 50 * 1024 * 1024; //50MB
 /** 从TCP读取的数据块最大大小，改小会成倍增加传输相同流量的cpu开销，同时会因为写满而增加数据进入缓冲区限速的概率*/
 /**- **警告**: 大小必须为2的幂，设置到大于64KB后只会写满写64KB*/
 /**- **警告**: 免费worker设置64KB时传输相同流量cpu开销最低。*/
-const maxChunkLen = 64 * 1024;        // 64KB
+const maxChunkLen = 4 * 1024;        // 4KB
 /** 进入缓冲模式时的缓冲区发送的触发时间。*/
 const flushTime = 4;                  // 4ms
 // ---------------------------------------------------------------------------------
@@ -1985,52 +1985,40 @@ const manualPipe = async (readable, writable, close, speed) => {
     if (speedLimit) {
         pipeStartThreshold = n > 256 ? Number.MAX_SAFE_INTEGER : n * 1048576;
         let bestSize = pipeBufferSize, bestTime = Infinity, bestDiff = Infinity;
-        for (let size = 262144; size <= 524288; size += 65536) {
+        for (let size = 262144; size <= 524288; size += 4096) {
             const timeMs = Math.max(2, Math.round(size * 1000 / pipeStartThreshold)), diff = Math.abs(size * 1000 / timeMs - pipeStartThreshold);
             if (diff < bestDiff || (diff === bestDiff && timeMs < bestTime)) bestSize = size, bestTime = timeMs, bestDiff = diff;
         }
         pipeBufferSize = bestSize, pipeFlushTime = bestTime;
     }
-    const safeBufferSize = pipeBufferSize - maxChunkLen, fastFlushOffset = maxChunkLen << 1;
+    const safeBufferSize = pipeBufferSize - maxChunkLen;
     let bufferView = new Uint8Array(pipeBufferSize), spareBuffer = new ArrayBuffer(maxChunkLen);
-    let offset = 0, totalBytes = 0, time = 0, timerId = null, resume = null, isReading = false;
-    let needsFlush = false, protectFlush = false, fastFlush = true, done, value;
+    let offset = 0, totalBytes = 0, time = 0, timerId = null, resume = null, done, value;
     const flushBuffer = () => {
-        if (isReading) return needsFlush = true;
-        fastFlush = offset < fastFlushOffset;
         if (offset > 0) (writable.send(bufferView.subarray(0, offset)), offset = 0);
-        needsFlush = false, protectFlush = false, timerId && (clearTimeout(timerId), timerId = null), resume?.(), resume = null;
+        timerId && (clearTimeout(timerId), timerId = null), resume?.(), resume = null;
     };
     const reader = readable.getReader({mode: 'byob'});
     try {
         while (true) {
-            if (offset > 0 && protectFlush) {
+            if (offset > 0) {
                 ({done, value} = await reader.read(new Uint8Array(spareBuffer, 0, maxChunkLen)));
                 bufferView.set(value, offset), spareBuffer = value.buffer;
             } else {
-                isReading = offset > 0;
                 ({done, value} = await reader.read(new Uint8Array(bufferView.buffer, offset, maxChunkLen)));
-                isReading = false, bufferView = new Uint8Array(value.buffer);
+                bufferView = new Uint8Array(value.buffer);
             }
             if (done) break;
             const chunkLen = value.byteLength;
-            if (!chunkLen) {
-                needsFlush && flushBuffer();
-                continue;
-            }
             offset += chunkLen, totalBytes += chunkLen;
-            if (needsFlush) {
-                flushBuffer();
-            } else {
-                if (fastFlush || chunkLen < 28672) {
-                    if (!speedLimit) totalBytes = 0;
-                    time = 2;
-                } else if (totalBytes > pipeStartThreshold) time = pipeFlushTime;
-                timerId ||= setTimeout(flushBuffer, time), protectFlush = chunkLen < maxChunkLen;
-                offset > safeBufferSize && (totalBytes > pipeStartThreshold ? await new Promise(r => resume = r) : flushBuffer());
-            }
+            if (chunkLen < 4096) {
+                if (!speedLimit) totalBytes = 0;
+                time = 2;
+            } else if (totalBytes > pipeStartThreshold) time = pipeFlushTime;
+            timerId ||= setTimeout(flushBuffer, time);
+            offset > safeBufferSize && (totalBytes > pipeStartThreshold ? await new Promise(r => resume = r) : flushBuffer());
         }
-    } catch {offset = 0, close?.()} finally {isReading = false, flushBuffer()}
+    } catch {offset = 0, close?.()} finally {flushBuffer()}
 };
 const createBufferedTcpWriter = (tcpWriter, close) => {
     const buffer = new Uint8Array(32768);
