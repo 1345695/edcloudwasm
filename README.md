@@ -1,6 +1,6 @@
 ## 项目简介 🚀
 
-本项目是一个部署在 **Cloudflare Workers** 上的高性能多协议代理入口 / 订阅面板。
+本项目是一个部署在 **Cloudflare Workers** 上的高性能多协议代理入口。
 
 ### 功能特性 ✨
 
@@ -17,10 +17,7 @@
   - 将复杂的协议解析、节点模板拼装、订阅转换前处理等逻辑封装在 `protocol.wasm` 中；
   - 使用 Rust 编写并编译为 WebAssembly，由 `_worker.js` 在 Worker 侧调用；
   - 在兼顾体积与性能的同时彻底隐藏各个代理协议头部固定特征增强cloudflare代码审查难度。
-- **订阅与面板一体化**
-  - 访问 `/UUID` 或 `/PASSWORD` 即可打开管理面板页面，需要在代码或者环境变量配置uuid或者trojan密码
-  - 订阅后端基于 cmliu 的实现，支持 Clash / SingBox / Surge / Quantumult / Loon / Stash 等多客户端订阅。
-
+  
 ---
 
 ## 部署到 Cloudflare Workers ☁️
