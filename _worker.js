@@ -23,7 +23,7 @@ const startThreshold = 50 * 1024 * 1024; //50MB
 /**- **警告**: 免费worker设置64KB时传输相同流量cpu开销最低。*/
 const maxChunkLen = 4 * 1024;        // 4KB
 /** 进入缓冲模式时的缓冲区发送的触发时间。*/
-const flushTime = 4;                 // 4ms
+const flushTime = 3;                 // 3ms
 // ---------------------------------------------------------------------------------
 /** SS AEAD加密时每批并发处理的payload分片数量，length加密开销低，会随payload一起提交。*/
 const ssAeadEncryptCount = 16;
@@ -1407,10 +1407,11 @@ const manualPipe = async (readable, writable, close, speed) => {
     }
     const safeBufferSize = pipeBufferSize - maxChunkLen;
     let bufferView = new Uint8Array(pipeBufferSize), spareBuffer = new ArrayBuffer(maxChunkLen);
-    let offset = 0, totalBytes = 0, time = 0, timerId = null, resume = null, done, value;
+    let offset = 0, totalBytes = 0, time = 0, timerId = null, delays = 0, resume = null, done, value;
     const flushBuffer = () => {
         if (offset > 0) (writable.send(bufferView.subarray(0, offset)), offset = 0);
         timerId && (clearTimeout(timerId), timerId = null), resume?.(), resume = null;
+        delays = 0;
     };
     const reader = readable.getReader({mode: 'byob'});
     try {
@@ -1427,22 +1428,28 @@ const manualPipe = async (readable, writable, close, speed) => {
             offset += chunkLen, totalBytes += chunkLen;
             if (chunkLen < 4096) {
                 if (!speedLimit) totalBytes = 0;
-                time = 2;
-            } else if (totalBytes > pipeStartThreshold) time = pipeFlushTime;
-            timerId ||= setTimeout(flushBuffer, time);
+                time = 0;
+            } else {
+                delays = 0;
+                if (totalBytes > pipeStartThreshold) time = pipeFlushTime;
+            }
+            time === 0
+                ? (timerId ? (delays < 2 ? (clearTimeout(timerId), timerId = setTimeout(flushBuffer, 0), delays++) : flushBuffer()) : (timerId = setTimeout(flushBuffer, 0)))
+                : (timerId ||= setTimeout(flushBuffer, time));
             offset > safeBufferSize && (totalBytes > pipeStartThreshold ? await new Promise(r => resume = r) : flushBuffer());
         }
     } catch {offset = 0, close?.()} finally {flushBuffer()}
 };
 const createBufferedTcpWriter = (tcpWriter, close) => {
     const buffer = new Uint8Array(32768);
-    let offset = 0, timerId = null, closed = false;
+    let offset = 0, timerId = null, delays = 0, closed = false;
     const closeWriter = () => {
         if (closed) return;
         closed = true, timerId && (clearTimeout(timerId), timerId = null), close?.();
     };
     const flush = () => {
         timerId && (clearTimeout(timerId), timerId = null);
+        delays = 0;
         if (!offset || closed) return;
         const len = offset;
         offset = 0;
@@ -1452,7 +1459,8 @@ const createBufferedTcpWriter = (tcpWriter, close) => {
         if (closed) return;
         const data = chunk.constructor === Uint8Array ? chunk : new Uint8Array(chunk), len = data.byteLength;
         if (!len) return;
-        offset + len > 32768 && flush(), buffer.set(data, offset), offset += len, offset === 32768 ? flush() : (timerId ||= setTimeout(flush, 2));
+        offset + len > 32768 && flush(), buffer.set(data, offset), offset += len;
+        offset === 32768 ? flush() : (timerId ? (delays < 2 ? (clearTimeout(timerId), timerId = setTimeout(flush, 0), delays++) : flush()) : (timerId = setTimeout(flush, 0)));
     };
 };
 const createAsyncMicrotaskQueue = (consume, close) => {
@@ -1589,10 +1597,11 @@ const handleXwebPost = async (request) => {
     const close = () => {if (state.xwebPipeTo) state.xwebPipeTo = false, reader.cancel().catch(() => {}), responseWriter.close().catch(() => {})};
     const writable = {send(chunk) {if (chunk?.byteLength) return responseWriter.write(chunk)}};
     (async () => {
-        let bufferView = new Uint8Array(32768), spareBuffer = new ArrayBuffer(8192), used = 0, uploaded = 0, timerId = null, done, value;
+        let bufferView = new Uint8Array(32768), spareBuffer = new ArrayBuffer(8192), used = 0, uploaded = 0, timerId = null, delays = 0, done, value;
         const flush = () => {
             if (used > 0 && state.tcpWriter && bufferView) (state.tcpWriter(bufferView.subarray(0, used)), used = 0);
             timerId && (clearTimeout(timerId), timerId = null);
+            delays = 0;
         };
         try {
             while (true) {
@@ -1615,7 +1624,7 @@ const handleXwebPost = async (request) => {
                         request.body.pipeThrough(upBridge).pipeTo(state.tcpSocket.writable);
                         break;
                     }
-                    used > 24576 ? flush() : (timerId ||= setTimeout(flush, 2));
+                    used > 24576 ? flush() : (timerId ? (delays < 2 ? (clearTimeout(timerId), timerId = setTimeout(flush, 0), delays++) : flush()) : (timerId = setTimeout(flush, 0)));
                 } else {
                     state.needMore = false;
                     await handleSession(bufferView.subarray(0, used), state, request, writable, close);
