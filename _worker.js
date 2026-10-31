@@ -67,7 +67,6 @@ const getCurrentColo = () => {
     }).finally(() => {pendingPromise = null});
 };
 const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
-const errorHtmlUrl = 'https://1345695.github.io/index-404-html/';
 let isInitialized = false, config = null;
 const getEnv = (env) => {
     if (config) return config;
@@ -1650,6 +1649,6 @@ export default {
             handleWebSocketConn(webSocket, request);
             return new Response(null, {status: 101, webSocket: clientSocket});
         }
-        return fetch(errorHtmlUrl);
+        return new Response(null, {status: 404});
     }
 };

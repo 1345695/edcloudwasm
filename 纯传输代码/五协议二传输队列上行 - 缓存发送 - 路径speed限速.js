@@ -2228,6 +2228,6 @@ export default {
             handleWebSocketConn(webSocket, request);
             return new Response(null, {status: 101, webSocket: clientSocket});
         }
-        return fetch('https://1345695.github.io/index-404-html/');
+        return new Response(null, {status: 404});
     }
 };
