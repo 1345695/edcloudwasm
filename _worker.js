@@ -1256,7 +1256,7 @@ const txtdnsResult = async (txtdns) => {
     }
     return prefixes.length ? prefixes : null;
 };
-const proxyIpRegex = /william|fxpip|hhtxt/;
+const proxyIpRegex = /william|fxpip/;
 const connectProxyIp = async (param, limit, txt) => {
     if (param === undefined) param = await getCurrentColo() || proxyHost;
     if (txt || proxyIpRegex.test(param)) {
