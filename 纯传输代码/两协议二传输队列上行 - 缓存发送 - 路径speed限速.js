@@ -12,7 +12,7 @@ const flushTime = 3;
 const concurrency = 4;
 const urlParamCacheLimit = 20;
 const proxyStrategyOrder = ['socks', 'http', 'https'];
-const aiProxyip = 'kr.william.us.ci';
+const aiProxyip = 'hkgai.58807.de5.net';
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
 const getProxyHost = () => {

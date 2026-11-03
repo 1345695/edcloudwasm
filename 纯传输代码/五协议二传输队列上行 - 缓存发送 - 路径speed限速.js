@@ -61,7 +61,7 @@ const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
 //出站socket获取顺序，全局模式下按数组顺序，非全局为：直连>socks>http>https>sstp>turn>turns>nat64>proxyip
 /**- **警告**: snippets只支持最大两次connect，所以snippets全局nat64不能使用域名访问，snippets访问cf失败的备用只有第一个有效*/
 const proxyStrategyOrder = ['socks', 'http', 'https', 'sstp', 'turn', 'turns', 'nat64'];
-const aiProxyip = 'kr.william.us.ci';//香港地区cf cdn ai分流第三方proxyip
+const aiProxyip = 'hkgai.58807.de5.net';//香港地区cf cdn ai分流第三方proxyip
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
 const getProxyHost = () => {
