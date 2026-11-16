@@ -1,14 +1,9 @@
 const uuid = 'd342d11e-d424-4583-b36e-524ab1f0afa4';
-const bufferSize = 256 * 1024;
-const startThreshold = 50 * 1024 * 1024;
+const bufferSize = 512 * 1024;
+const wsHighWaterMark = 2 * 1024 * 1024;
 const maxChunkLen = 4 * 1024;
-const flushTime = 3;
 const concurrency = 4;
-const getProxyHost = () => {
-    const e = (Math.random() * 65536) | 0;
-    return String.fromCharCode(112 ^ (e & 1) << 5, 114 ^ (e >> 1 & 1) << 5, 111 ^ (e >> 2 & 1) << 5, 120 ^ (e >> 3 & 1) << 5, 121 ^ (e >> 4 & 1) << 5, 46, 122 ^ (e >> 5 & 1) << 5, 106 ^ (e >> 6 & 1) << 5, 99 ^ (e >> 7 & 1) << 5, 108 ^ (e >> 8 & 1) << 5, 111 ^ (e >> 9 & 1) << 5, 117 ^ (e >> 10 & 1) << 5, 100 ^ (e >> 11 & 1) << 5, 46, 117 ^ (e >> 12 & 1) << 5, 115 ^ (e >> 13 & 1) << 5, 46, 99 ^ (e >> 14 & 1) << 5, 105 ^ (e >> 15 & 1) << 5);
-};
-const proxyHost = getProxyHost(), traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
+const proxyHost = String.fromCharCode(80, 114, 111, 120, 89, 46, 90, 74, 99, 76, 79, 85, 100, 46, 85, 115, 46, 67, 105), traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
 let colo = null, currentColo = null, pendingPromise = null;
 const getCurrentColo = () => {
     if (currentColo !== null) return currentColo;
@@ -43,46 +38,39 @@ const concurrentConnect = (hostname, port) => {
     }
     return Promise.any(attempts);
 };
-const manualPipe = async (readable, writable, close, speed) => {
-    const n = parseFloat(speed), speedLimit = n > 0;
-    let pipeBufferSize = bufferSize, pipeFlushTime = flushTime, pipeStartThreshold = startThreshold;
-    if (speedLimit) {
-        pipeStartThreshold = n > 256 ? Number.MAX_SAFE_INTEGER : n * 1048576;
-        let bestSize = pipeBufferSize, bestTime = Infinity, bestDiff = Infinity;
-        for (let size = 262144; size <= 524288; size += 4096) {
-            const timeMs = Math.max(2, Math.round(size * 1000 / pipeStartThreshold)), diff = Math.abs(size * 1000 / timeMs - pipeStartThreshold);
-            if (diff < bestDiff || (diff === bestDiff && timeMs < bestTime)) bestSize = size, bestTime = timeMs, bestDiff = diff;
-        }
-        pipeBufferSize = bestSize, pipeFlushTime = bestTime;
-    }
-    const safeBufferSize = pipeBufferSize - maxChunkLen;
-    let bufferView = new Uint8Array(pipeBufferSize), spareBuffer = new ArrayBuffer(maxChunkLen);
-    let offset = 0, totalBytes = 0, time = 0, timerId = null, resume = null, done, value;
+const manualPipe = async (readable, writable, close) => {
+    const safeBufferSize = bufferSize - maxChunkLen, checkInterval = wsHighWaterMark >> 1;
+    let bufferView = new Uint8Array(bufferSize), spareBuffer = new ArrayBuffer(maxChunkLen);
+    let offset = 0, transferred = checkInterval, timerId = null, isReading = false, needsFlush = false, protectFlush = false, done, value;
     const flushBuffer = () => {
-        if (offset > 0) (writable.send(bufferView.subarray(0, offset)), offset = 0);
-        timerId && (clearTimeout(timerId), timerId = null), resume?.(), resume = null;
+        if (isReading) return needsFlush = true;
+        if (offset > 0) (writable.send(bufferView.subarray(0, offset)), transferred += offset, offset = 0);
+        needsFlush = false, protectFlush = false, timerId && (clearTimeout(timerId), timerId = null);
     };
     const reader = readable.getReader({mode: 'byob'});
     try {
         while (true) {
-            if (offset > 0) {
+            if (transferred >= checkInterval) {
+                transferred = 0;
+                while (writable.bufferedAmount > wsHighWaterMark) {
+                    if (writable.readyState !== undefined && writable.readyState !== 1) throw new Error("socket closed");
+                    await scheduler.wait(4);
+                }
+            }
+            if (offset > 0 && protectFlush) {
                 ({done, value} = await reader.read(new Uint8Array(spareBuffer, 0, maxChunkLen)));
                 bufferView.set(value, offset), spareBuffer = value.buffer;
             } else {
+                isReading = offset > 0;
                 ({done, value} = await reader.read(new Uint8Array(bufferView.buffer, offset, maxChunkLen)));
-                bufferView = new Uint8Array(value.buffer);
+                isReading = false, bufferView = new Uint8Array(value.buffer);
             }
             if (done) break;
             const chunkLen = value.byteLength;
-            offset += chunkLen, totalBytes += chunkLen;
-            if (chunkLen < 4096) {
-                if (!speedLimit) totalBytes = 0;
-                time = 2;
-            } else if (totalBytes > pipeStartThreshold) time = pipeFlushTime;
-            timerId ||= setTimeout(flushBuffer, time);
-            offset > safeBufferSize && (totalBytes > pipeStartThreshold ? await new Promise(r => resume = r) : flushBuffer());
+            offset += chunkLen;
+            needsFlush ? flushBuffer() : (timerId ||= setTimeout(flushBuffer, 2), protectFlush = chunkLen < maxChunkLen, offset > safeBufferSize && flushBuffer());
         }
-    } catch {offset = 0, close?.()} finally {flushBuffer()}
+    } catch {offset = 0, close?.()} finally {isReading = false, flushBuffer()}
 };
 const createBufferedTcpWriter = (tcpWriter, close) => {
     const buffer = new Uint8Array(32768);
@@ -165,7 +153,6 @@ const handleSession = async (chunk, state, request, writable, close) => {
         for (let i = 1; i < 8; i++) hostname += ':' + ((addrBytes[i * 2] << 8) | addrBytes[i * 2 + 1]).toString(16);
         hostname = `[${hostname}]`;
     }
-    const speed = new URL(request.url).searchParams.get('speed');
     try {
         state.tcpSocket = await concurrentConnect(hostname, port);
     } catch {
@@ -176,7 +163,7 @@ const handleSession = async (chunk, state, request, writable, close) => {
     if (payload.byteLength) tcpWriter.write(payload);
     if (state.xwebPipeTo) return state.tcpWriter = (chunk) => tcpWriter.write(chunk);
     state.tcpWriter = createBufferedTcpWriter(tcpWriter, close);
-    manualPipe(state.tcpSocket.readable, writable, close, speed);
+    manualPipe(state.tcpSocket.readable, writable, close);
 };
 const handleWebSocketConn = async (webSocket, request) => {
     const refererHeader = request.headers.get("Referer");

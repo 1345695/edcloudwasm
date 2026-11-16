@@ -17,7 +17,6 @@
  * sstp/gsstp/sstpall         - 直连失败SSTP代理 / 全局SSTP            示例: sstp=user1:pass1@host1:443,user2:pass2@host2:443
  * ip/txtip/proxyip           - 直连失败时的备用IP                     示例: ip=1.2.3.4:443,5.6.7.8:443
  * proxyall/globalproxy/global - 全局代理标志,无s5/http/https参数时纯直连 示例: proxyall=1
- * speed                      - 下行限速,单位默认MB/s，大于256时解除限速  示例: speed=50 表示50MB/s
  * ==========================================================================================================================*/
 //**警告**:不看开头注释直接把域名地址扔浏览器里会收获彩蛋一枚
 const uuid = 'd342d11e-d424-4583-b36e-524ab1f0afa4';//vless使用的uuid
@@ -30,23 +29,15 @@ const socks5AndHttpUser = 'admin';     //socsk5和http协议用户名，设置�
 const socks5AndHttpPass = '123456';    //socsk5和http协议密码，设置为空即为无密码验证，需要客户端也为空
 const ssAeadPassword = '123456';       // ss协议 aes-128-gcm 密码（notls）
 // ---------------------------------------------------------------------------------
-// 理论最低带宽计算公式 (Theoretical Max Bandwidth Calculation):
-//    - 速度上限 (Mbps) = (bufferSize (字节) / flushTime (毫秒)) * 0.008
-//    - 示例: (512 * 1024 字节 / 10 毫秒) * 0.008 ≈ 419 Mbps
-//    - 在此模式下，这两个参数共同构成了一个精确的速度限制器。
-// 为有效降低下载大文件可能爆内存的风险，需要自行根据网络单线程速度计算参数。
-// ---------------------------------------------------------------------------------
 /** 缓冲区最大大小。*/
 /**- **警告**: 大小为maxChunkLen的整数倍使用率最高，不然会有空间浪费。*/
-const bufferSize = 256 * 1024;         // 256KB
-/** 开启限速缓存模式的大包流量阈值。*/
-const startThreshold = 50 * 1024 * 1024; //50MB
+const bufferSize = 512 * 1024;         // 512KB
+/** 下行发送缓冲水位，超过后暂停从TCP读取。*/
+const wsHighWaterMark = 2 * 1024 * 1024; // 2MB
 /** 从TCP读取的数据块最大大小，改小会成倍增加传输相同流量的cpu开销，同时会因为写满而增加数据进入缓冲区限速的概率*/
 /**- **警告**: 大小必须为2的幂，设置到大于64KB后只会写满写64KB*/
 /**- **警告**: 免费worker设置64KB时传输相同流量cpu开销最低。*/
-const maxChunkLen = 4 * 1024;        // 4KB
-/** 进入缓冲模式时的缓冲区发送的触发时间。*/
-const flushTime = 3;                  // 3ms
+const maxChunkLen = 4 * 1024;        // 64KB
 // ---------------------------------------------------------------------------------
 /** SS AEAD加密时每批并发处理的payload分片数量，length加密开销低，会随payload一起提交。*/
 const ssAeadEncryptCount = 16;
@@ -64,11 +55,7 @@ const proxyStrategyOrder = ['socks', 'http', 'https', 'sstp', 'turn', 'turns', '
 const aiProxyip = 'hkgai.58807.de5.net';//香港地区cf cdn ai分流第三方proxyip
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
-const getProxyHost = () => {
-    const e = (Math.random() * 65536) | 0;
-    return String.fromCharCode(112 ^ (e & 1) << 5, 114 ^ (e >> 1 & 1) << 5, 111 ^ (e >> 2 & 1) << 5, 120 ^ (e >> 3 & 1) << 5, 121 ^ (e >> 4 & 1) << 5, 46, 122 ^ (e >> 5 & 1) << 5, 106 ^ (e >> 6 & 1) << 5, 99 ^ (e >> 7 & 1) << 5, 108 ^ (e >> 8 & 1) << 5, 111 ^ (e >> 9 & 1) << 5, 117 ^ (e >> 10 & 1) << 5, 100 ^ (e >> 11 & 1) << 5, 46, 117 ^ (e >> 12 & 1) << 5, 115 ^ (e >> 13 & 1) << 5, 46, 99 ^ (e >> 14 & 1) << 5, 105 ^ (e >> 15 & 1) << 5);
-};
-const proxyHost = getProxyHost(), traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
+const proxyHost = String.fromCharCode(80, 114, 79, 120, 89, 46, 90, 74, 67, 76, 79, 117, 100, 46, 85, 83, 46, 67, 105), traceUrl = 'http://cp.cloudflare.com/cdn-cgi/trace';
 let colo = null, currentColo = null, pendingPromise = null;
 const getCurrentColo = () => {
     if (currentColo !== null) return currentColo;
@@ -1887,12 +1874,12 @@ const concurrentStrategyExec = (parsedRequest, params, exec, limit, txt) => {
     const attempts = params.map(param => Promise.resolve().then(() => exec(parsedRequest, param, limit, txt)));
     return raceAny(attempts);
 };
-const paramRegex = /(speed|gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|gturns|turnsall|gsstp|sstpall|sstp|s5|socks|http|https|nat64|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
+const paramRegex = /(gs5|s5all|ghttp|httpall|ghttps|httpsall|gnat64|nat64all|gturn|turnall|gturns|turnsall|gsstp|sstpall|sstp|s5|socks|http|https|nat64|turn|turns|txtip|ip)(?:=|:\/\/|%3A%2F%2F)([^&]+)|(proxyall|globalproxy|global)/gi;
 const urlListCacheDict = new Map(), urlListCacheKeys = new Array(urlParamCacheLimit), directFailTable = new Set();
 let urlListCacheIndex = 0;
 const portMap = {1: 1080, 2: 80, 5: 3478, 6: 443, 7: 5349};
 const establishTcpConnection = async (parsedRequest, request) => {
-    let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [], speed;
+    let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [];
     if (l > 3 && clean.charCodeAt(l - 4) === 47 && clean.charCodeAt(l - 3) === 84 && clean.charCodeAt(l - 2) === 117 && clean.charCodeAt(l - 1) === 110) {
         clean = clean.slice(0, l - 4);
     } else {
@@ -1901,7 +1888,6 @@ const establishTcpConnection = async (parsedRequest, request) => {
     }
     let cachedResult = urlListCacheDict.get(clean);
     if (cachedResult !== undefined) {
-        speed = cachedResult.speed;
         list = cachedResult.list;
         if (cachedResult.aiList && parsedRequest.isAiDomain) {
             if (colo === null) await getCurrentColo();
@@ -1917,7 +1903,6 @@ const establishTcpConnection = async (parsedRequest, request) => {
             paramRegex.lastIndex = 0;
             let m;
             while ((m = paramRegex.exec(clean))) {p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true}
-            if (p.speed) speed = p.speed;
             const proxyValueMap = {
                 socks: p.gs5 || p.s5all || p.s5 || p.socks,
                 http: p.ghttp || p.httpall || p.http,
@@ -1961,7 +1946,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         const oldKey = urlListCacheKeys[urlListCacheIndex];
         if (oldKey !== undefined) urlListCacheDict.delete(oldKey);
         urlListCacheKeys[urlListCacheIndex] = clean;
-        urlListCacheDict.set(clean, {list: normalList, aiList, speed});
+        urlListCacheDict.set(clean, {list: normalList, aiList});
         urlListCacheIndex = (urlListCacheIndex + 1) % urlParamCacheLimit;
         list = normalList;
         if (aiList && parsedRequest.isAiDomain) {
@@ -1976,52 +1961,45 @@ const establishTcpConnection = async (parsedRequest, request) => {
             const exec = strategyExecutorMap.get(type);
             const sub = (concurrent && Array.isArray(param)) ? Math.max(1, Math.floor(concurrency / (param.length || 1))) : undefined;
             const socket = await (sub ? concurrentStrategyExec(parsedRequest, param, exec, sub, txt) : exec(parsedRequest, param, undefined, txt));
-            if (socket) return {socket, speed};
+            if (socket) return {socket};
         } catch {}
         if (type === 0) (directFailTable.add(parsedRequest.host), directFailTable.size > 200 && directFailTable.delete(directFailTable.values().next().value));
     }
     return null;
 };
-const manualPipe = async (readable, writable, close, speed) => {
-    const n = parseFloat(speed), speedLimit = n > 0;
-    let pipeBufferSize = bufferSize, pipeFlushTime = flushTime, pipeStartThreshold = startThreshold;
-    if (speedLimit) {
-        pipeStartThreshold = n > 256 ? Number.MAX_SAFE_INTEGER : n * 1048576;
-        let bestSize = pipeBufferSize, bestTime = Infinity, bestDiff = Infinity;
-        for (let size = 262144; size <= 524288; size += 4096) {
-            const timeMs = Math.max(2, Math.round(size * 1000 / pipeStartThreshold)), diff = Math.abs(size * 1000 / timeMs - pipeStartThreshold);
-            if (diff < bestDiff || (diff === bestDiff && timeMs < bestTime)) bestSize = size, bestTime = timeMs, bestDiff = diff;
-        }
-        pipeBufferSize = bestSize, pipeFlushTime = bestTime;
-    }
-    const safeBufferSize = pipeBufferSize - maxChunkLen;
-    let bufferView = new Uint8Array(pipeBufferSize), spareBuffer = new ArrayBuffer(maxChunkLen);
-    let offset = 0, totalBytes = 0, time = 0, timerId = null, resume = null, done, value;
+const manualPipe = async (readable, writable, close) => {
+    const safeBufferSize = bufferSize - maxChunkLen, checkInterval = wsHighWaterMark >> 1;
+    let bufferView = new Uint8Array(bufferSize), spareBuffer = new ArrayBuffer(maxChunkLen);
+    let offset = 0, transferred = checkInterval, timerId = null, isReading = false, needsFlush = false, protectFlush = false, done, value;
     const flushBuffer = () => {
-        if (offset > 0) (writable.send(bufferView.subarray(0, offset)), offset = 0);
-        timerId && (clearTimeout(timerId), timerId = null), resume?.(), resume = null;
+        if (isReading) return needsFlush = true;
+        if (offset > 0) (writable.send(bufferView.subarray(0, offset)), transferred += offset, offset = 0);
+        needsFlush = false, protectFlush = false, timerId && (clearTimeout(timerId), timerId = null);
     };
     const reader = readable.getReader({mode: 'byob'});
     try {
         while (true) {
-            if (offset > 0) {
+            if (transferred >= checkInterval) {
+                transferred = 0;
+                while (writable.bufferedAmount > wsHighWaterMark) {
+                    if (writable.readyState !== undefined && writable.readyState !== 1) throw new Error("socket closed");
+                    await scheduler.wait(4);
+                }
+            }
+            if (offset > 0 && protectFlush) {
                 ({done, value} = await reader.read(new Uint8Array(spareBuffer, 0, maxChunkLen)));
                 bufferView.set(value, offset), spareBuffer = value.buffer;
             } else {
+                isReading = offset > 0;
                 ({done, value} = await reader.read(new Uint8Array(bufferView.buffer, offset, maxChunkLen)));
-                bufferView = new Uint8Array(value.buffer);
+                isReading = false, bufferView = new Uint8Array(value.buffer);
             }
             if (done) break;
             const chunkLen = value.byteLength;
-            offset += chunkLen, totalBytes += chunkLen;
-            if (chunkLen < 4096) {
-                if (!speedLimit) totalBytes = 0;
-                time = 2;
-            } else if (totalBytes > pipeStartThreshold) time = pipeFlushTime;
-            timerId ||= setTimeout(flushBuffer, time);
-            offset > safeBufferSize && (totalBytes > pipeStartThreshold ? await new Promise(r => resume = r) : flushBuffer());
+            offset += chunkLen;
+            needsFlush ? flushBuffer() : (timerId ||= setTimeout(flushBuffer, 2), protectFlush = chunkLen < maxChunkLen, offset > safeBufferSize && flushBuffer());
         }
-    } catch {offset = 0, close?.()} finally {flushBuffer()}
+    } catch {offset = 0, close?.()} finally {isReading = false, flushBuffer()}
 };
 const createBufferedTcpWriter = (tcpWriter, close) => {
     const buffer = new Uint8Array(32768);
@@ -2133,13 +2111,13 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
                     encrypted.byteLength && writable.send(encrypted);
                 }, close);
                 state.tcpSocket.extra?.length && ssSendQueue(state.tcpSocket.extra);
-                await manualPipe(state.tcpSocket.readable, {send: chunk => ssSendQueue(chunk.slice())}, close, tcpResult.speed);
+                await manualPipe(state.tcpSocket.readable, {send: chunk => ssSendQueue(chunk.slice())}, close);
             })().catch(close);
         } else {
             if (state.tcpSocket.extra?.length) await writable.send(state.tcpSocket.extra);
             state.tcpWriter = bufferedTcpWriter;
             if (state.xwebPipeTo) return;
-            manualPipe(state.tcpSocket.readable, writable, close, tcpResult.speed);
+            manualPipe(state.tcpSocket.readable, writable, close);
         }
     }
 };
