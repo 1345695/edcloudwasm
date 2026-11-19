@@ -1558,7 +1558,7 @@ const handleWebSocketConn = async (webSocket, request) => {
     const close = () => {webSocket.close(1011, 'WebSocket is closed')};
     const process = (chunk) => {
         if (state.tcpWriter) return state.tcpWriter(chunk);
-        return handleSession(earlyData ? chunk : new Uint8Array(chunk), state, request, webSocket, close, earlyData !== null);
+        return handleSession(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk), state, request, webSocket, close, earlyData !== null);
     };
     processingQueue = createAsyncMicrotaskQueue(process, close);
     if (earlyData) processingQueue(earlyData);
