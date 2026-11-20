@@ -80,34 +80,14 @@ pub unsafe extern "C" fn getSocks5AuthPtr() -> *const u8 {
     core::ptr::addr_of!(SOCKS5_AUTH) as *const u8
 }
 
-/// 生成随机大小写的 proxy 域名（proxy.zjcloud.us.ci），写入 COMMON_BUF 并返回长度（19）
-/// 使用纯数字码表和位运算处理，不包含明文字符串
-static mut RNG_STATE: u32 = 0x853c49e6;
-
+/// 返回固定的 proxy 域名（proxy.zjcloud.us.ci），写入 COMMON_BUF（19 字节）
+/// 使用纯数字码表，不包含明文字符串
 #[no_mangle]
 pub unsafe extern "C" fn getProxyHostWasm() {
-    // 用 3 行 Xorshift 伪随机算法推进状态
-    let mut rand = RNG_STATE;
-    rand ^= rand << 13;
-    rand ^= rand >> 17;
-    rand ^= rand << 5;
-    RNG_STATE = rand;
-
-    let p = COMMON_BUF.as_mut_ptr();
     const CODES: [u8; 19] = [
-        112, 114, 111, 120, 121, 46, 122, 106, 99, 108, 111, 117, 100, 46, 117, 115, 46, 99, 105,
+        80, 82, 79, 120, 89, 46, 90, 74, 67, 108, 79, 85, 100, 46, 85, 83, 46, 99, 73,
     ];
-    let mut i = 0usize;
-    while i < 19 {
-        let c = *CODES.get_unchecked(i);
-        if c != 46 {
-            *p.add(i) = c ^ (((rand & 1) << 5) as u8);
-            rand >>= 1;
-        } else {
-            *p.add(i) = 46;
-        }
-        i += 1;
-    }
+    core::ptr::copy_nonoverlapping(CODES.as_ptr(), COMMON_BUF.as_mut_ptr(), CODES.len());
 }
 
 // ==========================================

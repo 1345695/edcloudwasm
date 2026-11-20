@@ -1580,7 +1580,7 @@ class TlsClient {
                             const l = decryptedBatch[c];
                             const h = batch[c].type;
                             if (h === 23) {
-                                client.packetQueue.push(l);
+                                if (l.byteLength) client.packetQueue.push(l);
                             } else if (h === 21) {
                                 client.processAlert(l);
                             } else if (h === 22) {
@@ -1638,7 +1638,7 @@ class TlsClient {
      */
     async processTls13Record({data, type}) {
         if (type === 23) {
-            this.packetQueue.push(data); // 应用数据
+            if (data.byteLength) this.packetQueue.push(data); // 应用数据
         } else if (type === 21) {
             this.processAlert(data); // 告警消息
         } else if (type === 22) {

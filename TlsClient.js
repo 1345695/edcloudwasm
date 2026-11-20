@@ -351,7 +351,7 @@ export const {TlsClient} = (() => {
                             t.qn = a + e.length;
                             for (let c = 0; c < i.length; c++) {
                                 const l = i[c], h = e[c].type;
-                                if (h === 23) t.pq.push(l); else if (h === 21) t.pa(l); else if (h === 22) for (t.hp.feed(l); t.hp.next();) ;
+                                if (h === 23) l.byteLength && t.pq.push(l); else if (h === 21) t.pa(l); else if (h === 22) for (t.hp.feed(l); t.hp.next();) ;
                             }
                         }
                         if (t.pq.length) return t.pq.length === 1 ? t.pq.pop() : d(...t.pq.splice(0));
@@ -375,7 +375,7 @@ export const {TlsClient} = (() => {
         }
         async p13({data: t, type: e}) {
             if (e === 23) {
-                this.pq.push(t);
+                t.byteLength && this.pq.push(t);
             } else if (e === 21) {
                 this.pa(t);
             } else if (e === 22) {
