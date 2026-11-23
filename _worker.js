@@ -311,6 +311,12 @@ const concurrentDnsResolve = async (hostname, recordType) => {
     ]).catch(() => null);
     return res?.Answer || res?.answer || null;
 };
+const resolveTargetIpv4 = ({addrType, host, isHttp}) => {
+    if (isHttp) addrType = addrTypeIs(host);
+    if (addrType === 1) return Promise.resolve(host);
+    if (addrType !== 3) return Promise.resolve(null);
+    return concurrentDnsResolve(host, 'A').then(a => a?.find(r => r.type === 1)?.data ?? null);
+};
 const raceAny = promises => {
     let settled = false;
     const len = promises.length, wrapped = new Array(len);
@@ -478,7 +484,7 @@ const cat = (...a) => {
     }
     return r;
 };
-const sstpEmpty = new Uint8Array(0), sstpMss = 1400, sstpTcpWindowScale = 6, sstpTcpReceiveWindow = 4 * 1024 * 1024;
+const sstpEmpty = new Uint8Array(0), sstpMss = 1400, sstpTcpWindowScale = 6, sstpTcpReceiveWindow = 4 * 1024 * 1024, sstpSynOptions = new Uint8Array([2, 4, sstpMss >> 8, sstpMss & 0xff, 3, 3, sstpTcpWindowScale, 1]), sstpSendCap = 512 * 1024, sstpRto = 1500, sstpBackpressure = 2 * 1024 * 1024;
 const sstpU16 = (b, o) => (b[o] << 8) | b[o + 1];
 const sstpU32 = (b, o) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
 const sstpRandomBytes = length => crypto.getRandomValues(new Uint8Array(length));
@@ -537,14 +543,14 @@ const createSstpSession = (username, password) => {
     };
     const dataPacket = frame => {
         const length = 6 + frame.length, packet = new Uint8Array(length);
-        packet.set([0x10, 0, ((length >> 8) & 0x0f) | 0x80, length & 0xff, 0xff, 0x03]);
+        packet.set([0x10, 0, (length >> 8) & 0x0f, length & 0xff, 0xff, 0x03]);
         packet.set(frame, 6);
         return packet;
     };
     const controlPacket = (messageType, attrs = []) => {
         const attrsLength = attrs.reduce((sum, attr) => sum + 4 + attr.data.length, 0), packet = new Uint8Array(8 + attrsLength), view = new DataView(packet.buffer);
         packet[0] = 0x10, packet[1] = 1;
-        view.setUint16(2, packet.length | 0x8000), view.setUint16(4, messageType), view.setUint16(6, attrs.length);
+        view.setUint16(2, packet.length), view.setUint16(4, messageType), view.setUint16(6, attrs.length);
         attrs.reduce((offset, attr) => {
             packet[offset + 1] = attr.id;
             view.setUint16(offset + 2, 4 + attr.data.length);
@@ -604,6 +610,13 @@ const createSstpSession = (username, password) => {
             throw new Error('SSTP disconnected');
         } else if (messageType === 5 || messageType === 7) throw new Error('SSTP aborted');
     };
+    const readPpp = async timeoutMs => {
+        for (;;) {
+            const packet = await readPacket(timeoutMs);
+            if (!packet.ctrl) return parsePpp(packet.body);
+            await handleControl(packet.body);
+        }
+    };
     const connectSstp = async (hostname, port) => {
         socket = fetcher.connect({hostname, port}, {secureTransport: 'on', allowHalfOpen: false});
         await socket.opened;
@@ -613,9 +626,7 @@ const createSstpSession = (username, password) => {
     const establish = async () => {
         const authority = serverPort === 443 ? serverHost : `${serverHost}:${serverPort}`;
         const http = textEncoder.encode(`SSTP_DUPLEX_POST /sra_{BA195980-CD49-458b-9E23-C84EE0ADCD75}/ HTTP/1.1\r\nHost: ${authority}\r\nContent-Length: 18446744073709551615\r\nSSTPCORRELATIONID: {${crypto.randomUUID()}}\r\n\r\n`);
-        const protocolAttr = new Uint8Array(2), mru = new Uint8Array(2);
-        new DataView(protocolAttr.buffer).setUint16(0, 1), new DataView(mru.buffer).setUint16(0, 1500);
-        await write(cat(http, controlPacket(1, [{id: 1, data: protocolAttr}]), dataPacket(pppPacket(0xc021, 1, packetId++, [{type: 1, data: mru}]))));
+        await write(cat(http, controlPacket(1, [{id: 1, data: new Uint8Array([0, 1])}]), dataPacket(pppPacket(0xc021, 1, packetId++, [{type: 1, data: new Uint8Array([5, 0xdc])}]))));
         const statusLine = await readLine();
         let headersEnded = false;
         for (let i = 0; i < 64; i++) if ((await readLine()) === '') {
@@ -632,19 +643,16 @@ const createSstpSession = (username, password) => {
             await write(dataPacket(pppPacket(0x8021, 1, packetId++, [{type: 3, data: ip}])));
         };
         for (let attempts = 0; attempts < 40 && !done; attempts++) {
-            const packet = await readPacket(15000);
-            if (packet.ctrl) {
-                await handleControl(packet.body);
-                continue;
-            }
-            const ppp = parsePpp(packet.body);
+            const ppp = await readPpp(15000);
             if (!ppp) continue;
             if (ppp.protocol === 0xc021) {
                 if (ppp.code === 1) {
                     const ack = new Uint8Array(ppp.raw);
                     ack[2] = 2;
-                    await write(dataPacket(ack));
-                    if (localLcpDone) await sendAuth();
+                    if (localLcpDone && !authSent) {
+                        authSent = true;
+                        await write(cat(dataPacket(ack), dataPacket(papPacket(packetId++))));
+                    } else await write(dataPacket(ack));
                 } else if (ppp.code === 2) {
                     localLcpDone = true;
                     await sendAuth();
@@ -672,6 +680,7 @@ const createSstpSession = (username, password) => {
             }
         }
         if (!myIp || !sstpIpv4Bytes(myIp)) throw new Error('SSTP did not assign an IPv4 address');
+        await write(controlPacket(4));
         return myIp;
     };
     const close = () => {
@@ -681,30 +690,91 @@ const createSstpSession = (username, password) => {
         try {writer?.abort?.()?.catch?.(() => {})} catch {}
         try {socket?.close()} catch {}
     };
-    return {connect: connectSstp, establish, readPacket, parsePpp, dataPacket, controlPacket, handleControl, write, close, get bufferedLength() {return buffered.length}};
+    return {connect: connectSstp, establish, readPpp, ping: () => write(controlPacket(8)), write, close, get bufferedLength() {return buffered.length}};
 };
 const createSstpTcp = (sstp, sourceIp, targetIp, targetPort) => {
     const sourceBytes = sstpIpv4Bytes(sourceIp), targetBytes = sstpIpv4Bytes(targetIp);
     if (!sourceBytes || !targetBytes) throw new Error('SSTP TCP requires IPv4');
     const sourcePort = 10000 + sstpRandom16() % 50000, ipTemplate = new Uint8Array(20), pseudoHeader = new Uint8Array(12 + 20 + sstpMss);
-    let sequence = sstpRandom32(), acknowledgement = 0, peerWindowScale = 0;
+    let sequence = sstpRandom32(), acknowledgement = 0, ipId = 0, advertisedWindow = 65535;
+    let sndUnA = 0, peerScale = 0, serverWindow = 65535, rto = sstpRto, retries = 0, retransQueue = [], retransTimer = null, windowWaiters = [], tcpClosed = false;
+    const seqGt = (a, b) => ((a - b) | 0) > 0, seqLe = (a, b) => ((a - b) | 0) <= 0;
+    const wake = err => {const waiters = windowWaiters; windowWaiters = []; for (const resolver of waiters) resolver(err);};
+    const armRto = () => {
+        if (retransTimer || !retransQueue.length || tcpClosed) return;
+        retransTimer = setTimeout(() => {
+            retransTimer = null;
+            if (tcpClosed || !retransQueue.length) return;
+            if (++retries > 8) {tcpAbort(); return;}
+            rto = Math.min(rto * 2, 30000);
+            sstp.write(retransQueue[0].pkt).catch(() => {});
+            armRto();
+        }, rto);
+    };
+    const tcpAbort = () => {
+        if (tcpClosed) return;
+        tcpClosed = true;
+        clearTimeout(retransTimer), retransTimer = null;
+        retransQueue = [];
+        wake(true);
+        sstp.close();
+    };
+    const feed = matched => {
+        if (matched.flags & 0x02) {peerScale = matched.windowScale ?? 0; sndUnA = matched.ack; serverWindow = matched.window;}
+        const prevWindow = serverWindow;
+        if (!(matched.flags & 0x02)) serverWindow = matched.window << peerScale;
+        if ((matched.flags & 0x10) && seqGt(matched.ack, sndUnA) && seqLe(matched.ack, sequence)) {
+            sndUnA = matched.ack;
+            while (retransQueue.length && seqLe((retransQueue[0].seq + retransQueue[0].len) >>> 0, sndUnA)) retransQueue.shift();
+            retries = 0, rto = sstpRto;
+            clearTimeout(retransTimer), retransTimer = null;
+            retransQueue.length && armRto();
+            wake();
+        } else if (serverWindow > prevWindow) wake();
+    };
+    const send = async data => {
+        if (!data.length) return;
+        if (tcpClosed) throw new Error('SSTP connection is closed');
+        let offset = 0, frames = [];
+        while (offset < data.length) {
+            let tail = Math.min(sstpMss, data.length - offset);
+            for (;;) {
+                if (tcpClosed) throw new Error('SSTP connection is closed');
+                const avail = Math.min(serverWindow, sstpSendCap) - ((sequence - sndUnA) >>> 0);
+                if (avail >= tail) break;
+                if (avail > 0) {tail = avail; break;}
+                if (frames.length) {await sstp.write(frames.length === 1 ? frames[0] : cat(...frames)); frames = []; armRto();}
+                await new Promise((resolve, reject) => {
+                    let probeTimer = null;
+                    windowWaiters.push(v => {clearTimeout(probeTimer); v ? reject(new Error('SSTP send aborted')) : resolve(false);});
+                    probeTimer = setTimeout(() => {sstp.write(frame(0x18, data.subarray(offset, offset + 1))).catch(() => {}); sstp.ping().catch(() => {}); resolve(false);}, sstpRto);
+                });
+            }
+            const seg = data.subarray(offset, offset + tail);
+            frames.push(frame(0x18, seg));
+            retransQueue.push({seq: sequence, len: tail, pkt: frames[frames.length - 1]});
+            sequence = (sequence + tail) >>> 0;
+            offset += tail;
+        }
+        if (frames.length) {await sstp.write(frames.length === 1 ? frames[0] : cat(...frames)); armRto();}
+    };
     ipTemplate.set([0x45, 0, 0, 0, 0, 0, 0x40, 0, 64, 6]), ipTemplate.set(sourceBytes, 12), ipTemplate.set(targetBytes, 16);
     pseudoHeader.set(sourceBytes), pseudoHeader.set(targetBytes, 4), pseudoHeader[9] = 6;
-    const frame = (flags, payload = sstpEmpty) => {
-        const syn = (flags & 0x02) !== 0, tcpOptions = syn ? new Uint8Array([2, 4, sstpMss >> 8, sstpMss & 0xff, 3, 3, sstpTcpWindowScale, 1]) : sstpEmpty;
+    const frame = (flags, payload = emptyU8) => {
+        const syn = (flags & 0x02) !== 0, tcpOptions = syn ? sstpSynOptions : emptyU8;
         const tcpHeaderLength = 20 + tcpOptions.length, tcpLength = tcpHeaderLength + payload.length, ipLength = 20 + tcpLength, packetLength = 8 + ipLength, packet = new Uint8Array(packetLength), view = new DataView(packet.buffer);
-        packet.set([0x10, 0, ((packetLength >> 8) & 0x0f) | 0x80, packetLength & 0xff, 0xff, 3, 0, 0x21]), packet.set(ipTemplate, 8);
-        view.setUint16(10, ipLength), view.setUint16(12, sstpRandom16()), view.setUint16(18, sstpChecksum(packet, 8, 20));
+        packet.set([0x10, 0, (packetLength >> 8) & 0x0f, packetLength & 0xff, 0xff, 3, 0, 0x21]), packet.set(ipTemplate, 8);
+        view.setUint16(10, ipLength), view.setUint16(12, ipId = (ipId + 1) & 0xffff), view.setUint16(18, sstpChecksum(packet, 8, 20));
         view.setUint16(28, sourcePort), view.setUint16(30, targetPort), view.setUint32(32, sequence), view.setUint32(36, acknowledgement);
         packet[40] = (tcpHeaderLength / 4) << 4, packet[41] = flags;
-        view.setUint16(42, syn ? 65535 : Math.min(65535, Math.ceil(sstpTcpReceiveWindow / (1 << peerWindowScale))));
+        view.setUint16(42, syn ? 65535 : advertisedWindow);
         if (tcpOptions.length) packet.set(tcpOptions, 48);
         if (payload.length) packet.set(payload, 28 + tcpHeaderLength);
         pseudoHeader[10] = tcpLength >> 8, pseudoHeader[11] = tcpLength & 0xff, pseudoHeader.set(packet.subarray(28, 28 + tcpLength), 12);
         view.setUint16(44, sstpChecksum(pseudoHeader, 0, 12 + tcpLength));
         return packet;
     };
-    const match = ip => {
+    const match = (ip, needOptions) => {
         if (ip.length < 40 || (ip[0] >> 4) !== 4 || ip[9] !== 6) return null;
         const ipHeaderLength = (ip[0] & 0x0f) * 4;
         if (ipHeaderLength < 20 || ip.length < ipHeaderLength + 20) return null;
@@ -713,7 +783,7 @@ const createSstpTcp = (sstp, sourceIp, targetIp, targetPort) => {
         const tcpHeaderLength = ((ip[ipHeaderLength + 12] >> 4) & 0x0f) * 4, dataOffset = ipHeaderLength + tcpHeaderLength;
         if (tcpHeaderLength < 20 || dataOffset > ip.length) return null;
         let windowScale = null;
-        for (let offset = ipHeaderLength + 20; offset < dataOffset;) {
+        if (needOptions) for (let offset = ipHeaderLength + 20; offset < dataOffset;) {
             const type = ip[offset];
             if (type === 0) break;
             if (type === 1) {
@@ -726,24 +796,20 @@ const createSstpTcp = (sstp, sourceIp, targetIp, targetPort) => {
             if (type === 3 && length === 3) windowScale = Math.min(ip[offset + 2], 14);
             offset += length;
         }
-        return {flags: ip[ipHeaderLength + 13], sequence: sstpU32(ip, ipHeaderLength + 4), dataOffset, windowScale};
+        return {flags: ip[ipHeaderLength + 13], sequence: sstpU32(ip, ipHeaderLength + 4), ack: sstpU32(ip, ipHeaderLength + 8), window: sstpU16(ip, ipHeaderLength + 14), dataOffset, windowScale};
     };
     const handshake = async () => {
         await sstp.write(frame(0x02));
         sequence = (sequence + 1) >>> 0;
         for (let attempts = 0; attempts < 30; attempts++) {
-            const packet = await sstp.readPacket(15000);
-            if (packet.ctrl) {
-                await sstp.handleControl(packet.body);
-                continue;
-            }
-            const ppp = sstp.parsePpp(packet.body);
+            const ppp = await sstp.readPpp(15000);
             if (!ppp || ppp.protocol !== 0x0021) continue;
-            const matched = match(ppp.ip);
+            const matched = match(ppp.ip, true);
             if (!matched) continue;
             if (matched.flags & 0x04) throw new Error('SSTP target reset TCP handshake');
             if ((matched.flags & 0x12) === 0x12) {
-                peerWindowScale = matched.windowScale ?? 0;
+                advertisedWindow = Math.min(65535, Math.ceil(sstpTcpReceiveWindow / (1 << (matched.windowScale ?? 0))));
+                feed(matched);
                 acknowledgement = (matched.sequence + 1) >>> 0;
                 await sstp.write(frame(0x10));
                 return;
@@ -751,31 +817,25 @@ const createSstpTcp = (sstp, sourceIp, targetIp, targetPort) => {
         }
         throw new Error('SSTP TCP handshake timed out');
     };
-    return {frame, match, handshake, get sequence() {return sequence}, set sequence(value) {sequence = value}, get acknowledgement() {return acknowledgement}, set acknowledgement(value) {acknowledgement = value}};
-};
-const resolveSstpTargetIpv4 = async ({addrType, host, isHttp}) => {
-    if (isHttp) addrType = addrTypeIs(host);
-    if (addrType === 1) return host;
-    if (addrType !== 3) return null;
-    return (await concurrentDnsResolve(host, 'A'))?.find(r => r.type === 1)?.data ?? null;
+    return {frame, match, handshake, feed, send, abort: tcpAbort, get acknowledgement() {return acknowledgement}, set acknowledgement(value) {acknowledgement = value}};
 };
 const connectViaSstpProxy = async (sstpAuth, parsedRequest) => {
     if (!sstpAuth || parsedRequest.addrType === 4) return null;
     const {hostname, port} = sstpAuth;
     if (!hostname || !(port > 0 && port <= 65535)) return null;
-    const hasCredentials = !!sstpAuth.username && !!sstpAuth.password;
-    const username = hasCredentials ? sstpAuth.username : 'vpn', password = hasCredentials ? sstpAuth.password : 'vpn';
-    let closed = false, controller = null;
-    const sstp = createSstpSession(username, password), close = () => {
+    let closed = false, controller = null, tcp = null;
+    const sstp = createSstpSession(sstpAuth.username, sstpAuth.password), close = () => {
         if (closed) return;
-        closed = true, sstp.close();
+        closed = true;
+        tcp?.abort();
+        sstp.close();
     };
     try {
-        const targetIpPromise = resolveSstpTargetIpv4(parsedRequest);
+        const targetIpPromise = resolveTargetIpv4(parsedRequest);
         await sstp.connect(hostname, port);
         const [sourceIp, targetIp] = await Promise.all([sstp.establish(), targetIpPromise]);
         if (!targetIp) throw new Error('SSTP target has no IPv4 address');
-        const tcp = createSstpTcp(sstp, sourceIp, targetIp, parsedRequest.port);
+        tcp = createSstpTcp(sstp, sourceIp, targetIp, parsedRequest.port);
         await tcp.handshake();
         const readable = new ReadableStream({
             type: 'bytes',
@@ -792,15 +852,12 @@ const connectViaSstpProxy = async (sstpAuth, parsedRequest) => {
             };
             try {
                 for (; ;) {
-                    const packet = await sstp.readPacket(60000);
-                    if (packet.ctrl) {
-                        await sstp.handleControl(packet.body);
-                        continue;
-                    }
-                    const ppp = sstp.parsePpp(packet.body);
+                    if (controller.desiredSize < -sstpBackpressure) await scheduler.wait(4);
+                    const ppp = await sstp.readPpp(60000);
                     if (!ppp || ppp.protocol !== 0x0021) continue;
                     const matched = tcp.match(ppp.ip);
                     if (!matched) continue;
+                    tcp.feed(matched);
                     if (matched.flags & 0x04) throw new Error('SSTP target reset connection');
                     if (matched.dataOffset < ppp.ip.length) {
                         const data = ppp.ip.subarray(matched.dataOffset);
@@ -817,29 +874,19 @@ const connectViaSstpProxy = async (sstpAuth, parsedRequest) => {
                     }
                     if (sstp.bufferedLength < 4 || pendingLength >= 32768) flush();
                 }
-            } catch {} finally {
+            } catch {
+                try {controller.error(new Error('SSTP connection failed'))} catch {}
+            } finally {
                 try {pendingLength && flush()} catch {}
                 try {controller.close()} catch {}
+                tcp.abort();
                 close();
             }
         })();
         const writable = new WritableStream({
             async write(chunk) {
                 if (closed) throw new Error('SSTP connection is closed');
-                const data = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-                if (data.length <= sstpMss) {
-                    const frame = tcp.frame(0x18, data);
-                    tcp.sequence = (tcp.sequence + data.length) >>> 0;
-                    await sstp.write(frame);
-                    return;
-                }
-                const frames = [];
-                for (let offset = 0; offset < data.length; offset += sstpMss) {
-                    const segment = data.subarray(offset, Math.min(offset + sstpMss, data.length));
-                    frames.push(tcp.frame(0x18, segment));
-                    tcp.sequence = (tcp.sequence + segment.length) >>> 0;
-                }
-                await sstp.write(cat(...frames));
+                await tcp.send(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
             },
             close() {return closed ? undefined : sstp.write(tcp.frame(0x11)).catch(close)},
             abort: close
@@ -930,11 +977,8 @@ const readStun = async (rd, buf) => {
 };
 const md5 = async s => new Uint8Array(await crypto.subtle.digest('MD5', textEncoder.encode(s)));
 const connectViaTurnProxy = async ({hostname, port, username, password}, {addrType, port: targetPort, host, isHttp}, useTls = false) => {
-    let targetIp = host;
-    if (isHttp) addrType = addrTypeIs(targetIp);
-    if (addrType === 3) {
-        targetIp = concurrentDnsResolve(targetIp, 'A').then(ans => ans?.find(r => r.type === 1)?.data ?? null).catch(() => null);
-    } else if (addrType === 4) {return null}
+    if (addrType === 4 || (isHttp && addrTypeIs(host) === 4)) return null;
+    const targetIp = resolveTargetIpv4({addrType, host, isHttp});
     let ctrl = null, data = null, dataPromise = null, ctrlTls = null, dataTls = null, cw = null, cr = null, ctrlExtra = null, closed = false, refreshTimer = null;
     const proxyIsIp = addrTypeIs(hostname) !== 3;
     const close = () => {
@@ -1223,13 +1267,10 @@ const createDnsWriter = (state, writable, close, closeAfterResponse) => {
 const connectNat64 = async (addrType, hostname, port, nat64Auth, proxyAll, limit, isHttp) => {
     const nat64Prefixes = nat64Auth.charCodeAt(0) === 91 ? nat64Auth.slice(1, -1) : nat64Auth;
     if (!proxyAll) return concurrentConnect(`[${nat64Prefixes}6815:3598]`, port, limit);
-    if (isHttp) addrType = addrTypeIs(hostname);
-    if (addrType === 3) {
-        const ip = (await concurrentDnsResolve(hostname, 'A'))?.find(r => r.type === 1)?.data;
-        return ip ? concurrentConnect(ipv4ToNat64Ipv6(ip, nat64Prefixes), port, limit) : null;
-    }
-    if (addrType === 1) return concurrentConnect(ipv4ToNat64Ipv6(hostname, nat64Prefixes), port, limit);
-    return concurrentConnect(hostname, port, limit);
+    const ip = await resolveTargetIpv4({addrType, host: hostname, isHttp});
+    if (ip) return concurrentConnect(ipv4ToNat64Ipv6(ip, nat64Prefixes), port, limit);
+    if (addrType === 4 || (isHttp && addrTypeIs(hostname) === 4)) return concurrentConnect(hostname, port, limit);
+    return null;
 };
 const txtdnsResult = async (txtdns) => {
     const answer = await concurrentDnsResolve(txtdns, 'TXT');
