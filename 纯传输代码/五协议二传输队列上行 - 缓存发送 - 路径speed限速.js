@@ -38,20 +38,12 @@ const wsHighWaterMark = 2 * 1024 * 1024; // 2MB
 /**- **警告**: 大小必须为2的幂，设置到大于64KB后只会写满写64KB*/
 /**- **警告**: 免费worker设置64KB时传输相同流量cpu开销最低。*/
 const maxChunkLen = 4 * 1024;        // 64KB
-// ---------------------------------------------------------------------------------
 /** SS AEAD加密时每批并发处理的payload分片数量，length加密开销低，会随payload一起提交。*/
 const ssAeadEncryptCount = 16;
-// ---------------------------------------------------------------------------------
-/** TCPsocket并发获取，可提高tcp连接成功率*/
-/**- **警告**: snippets只能设置为1，worker最大支持6，超过6没意义*/
+/**- **警告**: worker最大支持6，超过6没意义*/
 const concurrency = 4;//socket获取并发数
 const enableSniSniff = false;//域名嗅探开关(支持ss vless trojan)
-// ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
-// ---------------------------------------------------------------------------------
-//出站socket获取顺序，全局模式下按数组顺序，非全局为：直连>socks>http>https>sstp>turn>turns>nat64>proxyip
-/**- **警告**: snippets只支持最大两次connect，所以snippets全局nat64不能使用域名访问，snippets访问cf失败的备用只有第一个有效*/
-const proxyStrategyOrder = ['socks', 'http', 'https', 'sstp', 'turn', 'turns', 'nat64'];
 const aiProxyip = 'hkgai.58807.de5.net';//香港地区cf cdn ai分流第三方proxyip
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
@@ -1899,7 +1891,6 @@ const connectProxyIp = async (param, limit, txt) => {
     const [host, port] = parseHostPort(param, 443);
     return concurrentConnect(host, port, limit);
 };
-const strategyTypeMap = {socks: 1, http: 2, https: 6, sstp: 8, turn: 5, turns: 7, nat64: 4};
 const strategyExecutorMap = new Map([
     [0, (req, _param, limit) => concurrentConnect(req.host, req.port, limit)],
     [1, async (req, param, limit, _txt) => connectViaSocksProxy(req.addrType, req.port, param, req.addrBytes, limit)],
@@ -1944,15 +1935,6 @@ const establishTcpConnection = async (parsedRequest, request) => {
             paramRegex.lastIndex = 0;
             let m;
             while ((m = paramRegex.exec(clean))) {p[(m[1] || m[3]).toLowerCase()] = m[2] ? (m[2].charCodeAt(m[2].length - 1) === 61 ? m[2].slice(0, -1) : m[2]) : true}
-            const proxyValueMap = {
-                socks: p.gs5 || p.s5all || p.s5 || p.socks,
-                http: p.ghttp || p.httpall || p.http,
-                https: p.ghttps || p.httpsall || p.https,
-                sstp: p.gsstp || p.sstpall || p.sstp,
-                turn: p.gturn || p.turnall || p.turn,
-                turns: p.gturns || p.turnsall || p.turns,
-                nat64: p.gnat64 || p.nat64all || p.nat64
-            };
             const proxyAll = !!(p.gs5 || p.s5all || p.ghttp || p.httpall || p.ghttps || p.httpsall || p.gsstp || p.sstpall || p.gnat64 || p.nat64all || p.gturn || p.turnall || p.gturns || p.turnsall || p.proxyall || p.globalproxy || p.global);
             const proxyItems = [];
             const add = (targetList, v, t, txt) => {
@@ -1973,7 +1955,13 @@ const establishTcpConnection = async (parsedRequest, request) => {
                     targetList.push({type: t, param: parsedParams, concurrent: true});
                 }
             };
-            for (const k of proxyStrategyOrder) add(proxyItems, proxyValueMap[k], strategyTypeMap[k]);
+            add(proxyItems, p.gs5 || p.s5all || p.s5 || p.socks, 1);
+            add(proxyItems, p.ghttp || p.httpall || p.http, 2);
+            add(proxyItems, p.ghttps || p.httpsall || p.https, 6);
+            add(proxyItems, p.gsstp || p.sstpall || p.sstp, 8);
+            add(proxyItems, p.gturn || p.turnall || p.turn, 5);
+            add(proxyItems, p.gturns || p.turnsall || p.turns, 7);
+            add(proxyItems, p.gnat64 || p.nat64all || p.nat64, 4);
             if (proxyAll) {
                 normalList.push(...proxyItems);
                 if (!normalList.length) normalList.push({type: 0});

@@ -9,7 +9,6 @@ const wsHighWaterMark = 2 * 1024 * 1024;
 const maxChunkLen = 4 * 1024;
 const concurrency = 4;
 const urlParamCacheLimit = 20;
-const proxyStrategyOrder = ['socks', 'http', 'https'];
 const aiProxyip = 'hkgai.58807.de5.net';
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
@@ -364,10 +363,9 @@ const establishTcpConnection = async (parsedRequest, request) => {
                     targetList.push({type: t, param: parsedParams, concurrent: true});
                 }
             };
-            for (let i = 0; i < proxyStrategyOrder.length; i++) {
-                const k = proxyStrategyOrder[i];
-                add(proxyItems, k === 'socks' ? s5 : k === 'http' ? http : https, k === 'socks' ? 1 : k === 'http' ? 2 : 6);
-            }
+            add(proxyItems, s5, 1);
+            add(proxyItems, http, 2);
+            add(proxyItems, https, 6);
             if (proxyAll) {
                 normalList.push(...proxyItems);
                 if (!normalList.length) normalList.push({type: 0});

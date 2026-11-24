@@ -16,18 +16,12 @@ const wsHighWaterMark = 2 * 1024 * 1024; // 2MB
 /**- **警告**: 大小必须为2的幂，设置到大于64KB后只会写满写64KB*/
 /**- **警告**: 免费worker设置64KB时传输相同流量cpu开销最低。*/
 const maxChunkLen = 4 * 1024;        // 4KB
-// ---------------------------------------------------------------------------------
 /** SS AEAD加密时每批并发处理的payload分片数量，length加密开销低，会随payload一起提交。*/
 const ssAeadEncryptCount = 16;
-// ---------------------------------------------------------------------------------
 /**- **警告**: worker最大支持6，超过6没意义*/
 const concurrency = 4;//socket获取并发数
 const enableSniSniff = false;//域名嗅探开关(支持ss vless trojan)
-// ---------------------------------------------------------------------------------
 const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
-// ---------------------------------------------------------------------------------
-//出站socket获取顺序，全局模式下按数组顺序，非全局为：直连>socks>http>https>sstp>turn>turns>nat64>proxyip
-const proxyStrategyOrder = ['socks', 'http', 'https', 'sstp', 'turn', 'turns', 'nat64'];
 const aiProxyip = 'hkgai.58807.de5.net';//香港地区cf cdn ai分流第三方proxyip
 const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
 const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
@@ -1311,7 +1305,6 @@ const connectProxyIp = async (param, limit, txt) => {
     const [host, port] = parseHostPort(param, 443);
     return concurrentConnect(host, port, limit);
 };
-const strategyTypeMap = {socks: 1, http: 2, https: 6, sstp: 8, turn: 5, turns: 7, nat64: 4};
 const strategyExecutorMap = new Map([
     [0, (req, _param, limit) => concurrentConnect(req.host, req.port, limit)],
     [1, async (req, param, limit, _txt) => connectViaSocksProxy(req.addrType, req.port, param, req.addrBytes, limit)],
@@ -1360,17 +1353,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
             wasmMem.set(urlBytes, dataPtr);
             parseUrlWasm(urlBytes.length);
             const r = wasmRes;
-            const proxyValueMap = {
-                socks: getUrlParam(r[15], r[16]),
-                http: getUrlParam(r[17], r[18]),
-                https: getUrlParam(r[26], r[27]),
-                sstp: getUrlParam(r[32], r[33]),
-                turn: getUrlParam(r[24], r[25]),
-                turns: getUrlParam(r[30], r[31]),
-                nat64: getUrlParam(r[19], r[20]),
-                ip: getUrlParam(r[21], r[22]),
-                txtip: getUrlParam(r[28], r[29])
-            };
+            const ipParam = getUrlParam(r[21], r[22]), txtIpParam = getUrlParam(r[28], r[29]);
             const proxyAll = r[23] === 1;
             const proxyItems = [];
             const add = (targetList, v, t, txt) => {
@@ -1391,15 +1374,21 @@ const establishTcpConnection = async (parsedRequest, request) => {
                     targetList.push({type: t, param: parsedParams, concurrent: true});
                 }
             };
-            for (const k of proxyStrategyOrder) add(proxyItems, proxyValueMap[k], strategyTypeMap[k]);
+            add(proxyItems, getUrlParam(r[15], r[16]), 1);
+            add(proxyItems, getUrlParam(r[17], r[18]), 2);
+            add(proxyItems, getUrlParam(r[26], r[27]), 6);
+            add(proxyItems, getUrlParam(r[32], r[33]), 8);
+            add(proxyItems, getUrlParam(r[24], r[25]), 5);
+            add(proxyItems, getUrlParam(r[30], r[31]), 7);
+            add(proxyItems, getUrlParam(r[19], r[20]), 4);
             if (proxyAll) {
                 normalList.push(...proxyItems);
                 if (!normalList.length) normalList.push({type: 0});
                 aiList = null;
             } else {
-                normalList.push({type: 0}, ...proxyItems), add(normalList, proxyValueMap.ip, 3), add(normalList, proxyValueMap.txtip, 3, true);
+                normalList.push({type: 0}, ...proxyItems), add(normalList, ipParam, 3), add(normalList, txtIpParam, 3, true);
                 normalList.push({type: 3}, {type: 3, param: proxyHost}), aiList = [...proxyItems];
-                add(aiList, proxyValueMap.ip || aiProxyip, 3), add(aiList, proxyValueMap.txtip, 3, true), aiList.push({type: 3}, {type: 3, param: proxyHost});
+                add(aiList, ipParam || aiProxyip, 3), add(aiList, txtIpParam, 3, true), aiList.push({type: 3}, {type: 3, param: proxyHost});
             }
         }
         const oldKey = urlListCacheKeys[urlListCacheIndex];
